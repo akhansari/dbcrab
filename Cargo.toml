@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+ansitok = "0.3.0"
 clap = "4.6.1"
 crossterm = "0.29.0"
 nu-ansi-term = "0.50.3"

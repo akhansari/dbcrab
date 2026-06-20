@@ -1,5 +1,8 @@
 use nu_ansi_term::{Color, Style as AnsiStyle};
-use std::io;
+use std::{
+    io::{self, IsTerminal},
+    sync::{Arc, Mutex},
+};
 
 use crossterm::terminal;
 use sqlx::{Column, Row, TypeInfo, postgres::PgRow};
@@ -11,11 +14,156 @@ use tabled::{
 pub const LARGE_RESULT_WARNING_ROWS: usize = 1_000;
 pub const MAX_CELL_HEIGHT: usize = 6;
 const DEFAULT_TERMINAL_WIDTH: usize = 120;
+const DEFAULT_TERMINAL_HEIGHT: usize = 24;
 const MIN_TABLE_WIDTH: usize = 20;
+const MIN_INLINE_COLUMN_WIDTH: usize = 12;
+const INLINE_TABLE_OVERHEAD_ROWS: usize = 4;
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct ResultGrid {
+    columns: Vec<String>,
+    column_types: Vec<String>,
+    rows: Vec<Vec<String>>,
+}
+
+impl ResultGrid {
+    pub(crate) fn new(
+        columns: Vec<String>,
+        column_types: Vec<String>,
+        rows: Vec<Vec<String>>,
+    ) -> Self {
+        Self {
+            columns,
+            column_types,
+            rows,
+        }
+    }
+
+    pub fn from_rows(rows: &[PgRow]) -> Self {
+        if rows.is_empty() {
+            return Self::new(Vec::new(), Vec::new(), Vec::new());
+        }
+
+        let columns = rows[0].columns();
+        let column_names = columns
+            .iter()
+            .map(|column| column.name().to_owned())
+            .collect::<Vec<_>>();
+        let column_types = columns
+            .iter()
+            .map(|column| column.type_info().name().to_owned())
+            .collect::<Vec<_>>();
+
+        let rows = rows
+            .iter()
+            .map(|row| {
+                row.columns()
+                    .iter()
+                    .enumerate()
+                    .map(|(index, column)| render_cell(row, index, column.type_info().name()))
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+
+        Self::new(column_names, column_types, rows)
+    }
+
+    pub fn columns(&self) -> &[String] {
+        &self.columns
+    }
+
+    pub fn rows(&self) -> &[Vec<String>] {
+        &self.rows
+    }
+
+    pub fn column_type(&self, index: usize) -> Option<&str> {
+        self.column_types.get(index).map(String::as_str)
+    }
+
+    pub fn cell(&self, row: usize, column: usize) -> Option<&str> {
+        self.rows
+            .get(row)
+            .and_then(|row| row.get(column))
+            .map(String::as_str)
+    }
+
+    pub fn row_count(&self) -> usize {
+        self.rows.len()
+    }
+
+    pub fn column_count(&self) -> usize {
+        self.columns.len()
+    }
+}
+
+pub enum RowsDisplay {
+    Inline(String),
+    Tui(ResultGrid),
+}
+
+#[derive(Debug, Default, Clone, Copy, Eq, PartialEq)]
+pub enum DisplayMode {
+    #[default]
+    Auto,
+    Inline,
+    Full,
+}
+
+impl DisplayMode {
+    pub fn next(self) -> Self {
+        match self {
+            Self::Auto => Self::Inline,
+            Self::Inline => Self::Full,
+            Self::Full => Self::Auto,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Inline => "inline",
+            Self::Full => "full",
+        }
+    }
+}
+
+#[derive(Debug, Default, Clone)]
+pub struct DisplayModeState {
+    mode: Arc<Mutex<DisplayMode>>,
+}
+
+impl DisplayModeState {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn get(&self) -> DisplayMode {
+        *self
+            .mode
+            .lock()
+            .expect("display mode state is not poisoned")
+    }
+
+    pub fn set(&self, mode: DisplayMode) {
+        *self
+            .mode
+            .lock()
+            .expect("display mode state is not poisoned") = mode;
+    }
+
+    pub fn cycle(&self) -> DisplayMode {
+        let mut mode = self
+            .mode
+            .lock()
+            .expect("display mode state is not poisoned");
+        *mode = mode.next();
+        *mode
+    }
+}
 
 pub fn render_rows(rows: &[PgRow]) -> String {
     if rows.is_empty() {
-        return row_count(0);
+        return render_row_count(0);
     }
 
     let table = if rows.len() == 1 {
@@ -33,8 +181,29 @@ pub fn render_rows(rows: &[PgRow]) -> String {
     }
     output.push_str(&table);
     output.push('\n');
-    output.push_str(&row_count(rows.len()));
+    output.push_str(&render_row_count(rows.len()));
     output
+}
+
+pub fn rows_display(rows: &[PgRow]) -> RowsDisplay {
+    if rows.is_empty() {
+        return RowsDisplay::Inline(render_row_count(0));
+    }
+
+    let grid = ResultGrid::from_rows(rows);
+    let dimensions = terminal_dimensions();
+    let interactive = io::stdout().is_terminal();
+
+    if should_use_tui(&grid, None, dimensions, interactive) {
+        return RowsDisplay::Tui(grid);
+    }
+
+    let inline = render_rows(rows);
+    if should_use_tui(&grid, Some(&inline), dimensions, interactive) {
+        RowsDisplay::Tui(grid)
+    } else {
+        RowsDisplay::Inline(inline)
+    }
 }
 
 fn rows_builder(rows: &[PgRow]) -> Builder {
@@ -144,7 +313,7 @@ fn render_expanded_cell(row: &PgRow, index: usize, type_name: &str) -> String {
     }
 }
 
-fn format_json_value(value: serde_json::Value) -> String {
+pub(crate) fn format_json_value(value: serde_json::Value) -> String {
     let pretty = serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string());
     highlight_json(&pretty)
 }
@@ -321,7 +490,7 @@ fn pluralize(count: usize, singular: &str) -> String {
     }
 }
 
-fn row_count(count: usize) -> String {
+pub fn render_row_count(count: usize) -> String {
     AnsiStyle::new()
         .dimmed()
         .paint(format!("({count} {})", pluralize(count, "row")))
@@ -329,14 +498,61 @@ fn row_count(count: usize) -> String {
 }
 
 fn terminal_table_width() -> usize {
-    table_width_from_terminal_size(terminal::size())
+    terminal_dimensions().table_width()
 }
 
-fn table_width_from_terminal_size(size: io::Result<(u16, u16)>) -> usize {
-    size.map(|(width, _)| usize::from(width))
-        .unwrap_or(DEFAULT_TERMINAL_WIDTH)
-        .saturating_sub(1)
-        .max(MIN_TABLE_WIDTH)
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+struct TerminalDimensions {
+    width: usize,
+    height: usize,
+}
+
+impl TerminalDimensions {
+    fn table_width(self) -> usize {
+        self.width.saturating_sub(1).max(MIN_TABLE_WIDTH)
+    }
+}
+
+fn terminal_dimensions() -> TerminalDimensions {
+    dimensions_from_terminal_size(terminal::size())
+}
+
+fn dimensions_from_terminal_size(size: io::Result<(u16, u16)>) -> TerminalDimensions {
+    size.map(|(width, height)| TerminalDimensions {
+        width: usize::from(width),
+        height: usize::from(height),
+    })
+    .unwrap_or(TerminalDimensions {
+        width: DEFAULT_TERMINAL_WIDTH,
+        height: DEFAULT_TERMINAL_HEIGHT,
+    })
+}
+
+fn should_use_tui(
+    grid: &ResultGrid,
+    inline: Option<&str>,
+    dimensions: TerminalDimensions,
+    interactive: bool,
+) -> bool {
+    interactive
+        && (columns_too_narrow(grid, dimensions.width)
+            || rows_too_tall(grid, dimensions.height)
+            || inline.is_some_and(|output| output.lines().count() > dimensions.height))
+}
+
+fn columns_too_narrow(grid: &ResultGrid, width: usize) -> bool {
+    let column_count = grid.column_count();
+    column_count > 1 && width / column_count < MIN_INLINE_COLUMN_WIDTH
+}
+
+fn rows_too_tall(grid: &ResultGrid, height: usize) -> bool {
+    let body_rows = if grid.row_count() == 1 {
+        grid.column_count()
+    } else {
+        grid.row_count()
+    };
+
+    body_rows.saturating_add(INLINE_TABLE_OVERHEAD_ROWS) > height
 }
 
 #[cfg(test)]
@@ -353,6 +569,22 @@ mod tests {
 
         // Then
         assert_eq!(word, "row");
+    }
+
+    #[test]
+    fn display_mode_cycles_auto_inline_full() {
+        // Given
+        let mode = DisplayMode::Auto;
+
+        // When
+        let inline = mode.next();
+        let full = inline.next();
+        let auto = full.next();
+
+        // Then
+        assert_eq!(inline, DisplayMode::Inline);
+        assert_eq!(full, DisplayMode::Full);
+        assert_eq!(auto, DisplayMode::Auto);
     }
 
     #[test]
@@ -373,7 +605,7 @@ mod tests {
         let count = 2;
 
         // When
-        let formatted = row_count(count);
+        let formatted = render_row_count(count);
 
         // Then
         assert_eq!(formatted, "\u{1b}[2m(2 rows)\u{1b}[0m");
@@ -472,7 +704,7 @@ mod tests {
         let size = Ok((80, 24));
 
         // When
-        let width = table_width_from_terminal_size(size);
+        let width = dimensions_from_terminal_size(size).table_width();
 
         // Then
         assert_eq!(width, 79);
@@ -484,10 +716,12 @@ mod tests {
         let size = Err(std::io::Error::other("no tty"));
 
         // When
-        let width = table_width_from_terminal_size(size);
+        let dimensions = dimensions_from_terminal_size(size);
 
         // Then
-        assert_eq!(width, DEFAULT_TERMINAL_WIDTH - 1);
+        assert_eq!(dimensions.width, DEFAULT_TERMINAL_WIDTH);
+        assert_eq!(dimensions.height, DEFAULT_TERMINAL_HEIGHT);
+        assert_eq!(dimensions.table_width(), DEFAULT_TERMINAL_WIDTH - 1);
     }
 
     #[test]
@@ -496,9 +730,107 @@ mod tests {
         let size = Ok((4, 24));
 
         // When
-        let width = table_width_from_terminal_size(size);
+        let width = dimensions_from_terminal_size(size).table_width();
 
         // Then
         assert_eq!(width, MIN_TABLE_WIDTH);
+    }
+
+    #[test]
+    fn display_mode_uses_inline_for_non_interactive_stdout() {
+        // Given
+        let grid = test_grid(10, 100);
+        let dimensions = TerminalDimensions {
+            width: 80,
+            height: 24,
+        };
+
+        // When
+        let use_tui = should_use_tui(&grid, None, dimensions, false);
+
+        // Then
+        assert!(!use_tui);
+    }
+
+    #[test]
+    fn display_mode_uses_tui_when_columns_are_too_narrow() {
+        // Given
+        let grid = test_grid(8, 2);
+        let dimensions = TerminalDimensions {
+            width: 80,
+            height: 24,
+        };
+
+        // When
+        let use_tui = should_use_tui(&grid, None, dimensions, true);
+
+        // Then
+        assert!(use_tui);
+    }
+
+    #[test]
+    fn display_mode_uses_tui_when_rows_exceed_terminal_height() {
+        // Given
+        let grid = test_grid(2, 30);
+        let dimensions = TerminalDimensions {
+            width: 80,
+            height: 24,
+        };
+
+        // When
+        let use_tui = should_use_tui(&grid, None, dimensions, true);
+
+        // Then
+        assert!(use_tui);
+    }
+
+    #[test]
+    fn display_mode_uses_tui_when_wrapped_output_exceeds_terminal_height() {
+        // Given
+        let grid = test_grid(2, 2);
+        let dimensions = TerminalDimensions {
+            width: 80,
+            height: 4,
+        };
+        let inline = "header\nrow1\nrow2\nrow3\nrow4";
+
+        // When
+        let use_tui = should_use_tui(&grid, Some(inline), dimensions, true);
+
+        // Then
+        assert!(use_tui);
+    }
+
+    #[test]
+    fn display_mode_keeps_small_results_inline() {
+        // Given
+        let grid = test_grid(2, 2);
+        let dimensions = TerminalDimensions {
+            width: 80,
+            height: 24,
+        };
+        let inline = "header\nrow1\nrow2";
+
+        // When
+        let use_tui = should_use_tui(&grid, Some(inline), dimensions, true);
+
+        // Then
+        assert!(!use_tui);
+    }
+
+    fn test_grid(column_count: usize, row_count: usize) -> ResultGrid {
+        ResultGrid::new(
+            (1..=column_count)
+                .map(|index| format!("column{index}"))
+                .collect(),
+            vec!["text".to_owned(); column_count],
+            (1..=row_count)
+                .map(|row| {
+                    (1..=column_count)
+                        .map(|column| format!("r{row}c{column}"))
+                        .collect()
+                })
+                .collect(),
+        )
     }
 }

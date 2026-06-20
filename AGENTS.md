@@ -21,10 +21,10 @@ DBCrab is a modern REPL-first PostgreSQL client with auto-completion and syntax 
 
 ## Libs
 
-- Use `clap` for command line parsing.
+- Use `clap` for the command line parsing.
   - Docs: <https://docs.rs/clap>
   - Repo: <https://github.com/clap-rs/clap>
-- Use `reedline` for line editor.
+- Use `reedline` for the line editor.
   - Docs: <https://docs.rs/reedline>
   - Repo: <https://github.com/nushell/reedline>
 - Use `crossterm` for terminal manipulation.
