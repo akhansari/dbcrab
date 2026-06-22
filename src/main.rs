@@ -45,5 +45,5 @@ async fn run() -> AppResult<()> {
     let catalog = catalog::Catalog::load(&pool).await?;
     println!("Loaded {}.", catalog.summary());
 
-    repl::run(pool, catalog, config.keybindings.tui).await
+    repl::run(pool, catalog, config.keybindings.tui, args.history_context).await
 }

@@ -144,7 +144,8 @@ impl DisplayModeState {
             .expect("display mode state is not poisoned")
     }
 
-    pub fn set(&self, mode: DisplayMode) {
+    #[cfg(test)]
+    pub(crate) fn set(&self, mode: DisplayMode) {
         *self
             .mode
             .lock()

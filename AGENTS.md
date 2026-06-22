@@ -47,3 +47,14 @@ DBCrab is a modern REPL-first PostgreSQL client with auto-completion and syntax 
   - Proactively detect too complex or not optimized code and suggest improvements and simplification.
 - Use the most adapted design patterns for each situation.
   - Proactively detect bad design patterns or code smells and suggest improvements.
+
+## Development Commands
+
+Always run these commands at the end:
+
+```bash
+cargo fmt
+cargo clippy
+cargo check
+cargo test
+```

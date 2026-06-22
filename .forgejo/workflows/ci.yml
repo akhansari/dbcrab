@@ -1,0 +1,36 @@
+name: ci
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  checks_on_commit:
+    runs-on: codeberg-small-lazy
+    container:
+      image: rust:1
+
+    steps:
+      - name: Checkout
+        run: |
+          git init .
+          git remote add origin "${FORGEJO_SERVER_URL}/${FORGEJO_REPOSITORY}.git"
+          git fetch --depth 1 origin "${FORGEJO_REF:-${GITHUB_SHA}}"
+          git checkout --detach FETCH_HEAD
+
+      - name: Check formatting
+        run: cargo fmt --check
+
+      - name: Check common mistakes
+        run: cargo clippy --locked
+
+      - name: Check errors
+        run: cargo check --locked
+
+      - name: Check tests
+        run: cargo test --locked

@@ -3,6 +3,7 @@
 
   "permission": {
     "bash": {
+      "cargo check *": "allow",
       "cargo fmt *": "allow",
       "cargo test *": "allow"
     }
