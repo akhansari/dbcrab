@@ -8,6 +8,8 @@ pub struct DbPrompt {
     display_mode: DisplayModeState,
 }
 
+pub struct CommandPrompt;
+
 impl DbPrompt {
     pub fn new(display_mode: DisplayModeState) -> Self {
         Self { display_mode }
@@ -42,6 +44,31 @@ impl Prompt for DbPrompt {
     }
 }
 
+impl Prompt for CommandPrompt {
+    fn render_prompt_left(&self) -> Cow<'_, str> {
+        Cow::Borrowed("")
+    }
+
+    fn render_prompt_right(&self) -> Cow<'_, str> {
+        Cow::Borrowed("")
+    }
+
+    fn render_prompt_indicator(&self, _prompt_mode: PromptEditMode) -> Cow<'_, str> {
+        Cow::Borrowed(": ")
+    }
+
+    fn render_prompt_multiline_indicator(&self) -> Cow<'_, str> {
+        Cow::Borrowed("  ")
+    }
+
+    fn render_prompt_history_search_indicator(
+        &self,
+        _history_search: PromptHistorySearch,
+    ) -> Cow<'_, str> {
+        Cow::Borrowed(": ")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -70,5 +97,29 @@ mod tests {
 
         // Then
         assert_eq!(right, "[full]");
+    }
+
+    #[test]
+    fn command_prompt_uses_colon_indicator() {
+        // Given
+        let prompt = CommandPrompt;
+
+        // When
+        let indicator = prompt.render_prompt_indicator(PromptEditMode::Default);
+
+        // Then
+        assert_eq!(indicator, ": ");
+    }
+
+    #[test]
+    fn command_prompt_hides_display_mode() {
+        // Given
+        let prompt = CommandPrompt;
+
+        // When
+        let right = prompt.render_prompt_right();
+
+        // Then
+        assert_eq!(right, "");
     }
 }

@@ -5,6 +5,7 @@ mod config;
 mod connection;
 mod errors;
 mod highlight;
+mod meta;
 mod prompt;
 mod render;
 mod repl;
@@ -44,6 +45,7 @@ async fn run() -> AppResult<()> {
     println!("Connected. Loading metadata...");
     let catalog = catalog::Catalog::load(&pool).await?;
     println!("Loaded {}.", catalog.summary());
+    let catalog = catalog::shared_catalog(catalog);
 
     repl::run(pool, catalog, config.keybindings.tui, args.history_context).await
 }

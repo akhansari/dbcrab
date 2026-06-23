@@ -26,30 +26,14 @@ focus_next = ["tab"]
 quit = ["q", "esc", "ctrl-c"]
 "#;
 
-#[derive(Debug, Clone, Eq, PartialEq)]
+#[derive(Debug, Clone, Eq, PartialEq, Default)]
 pub struct AppConfig {
     pub keybindings: KeybindingsConfig,
 }
 
-impl Default for AppConfig {
-    fn default() -> Self {
-        Self {
-            keybindings: KeybindingsConfig::default(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Eq, PartialEq)]
+#[derive(Debug, Clone, Eq, PartialEq, Default)]
 pub struct KeybindingsConfig {
     pub tui: TuiKeybindings,
-}
-
-impl Default for KeybindingsConfig {
-    fn default() -> Self {
-        Self {
-            tui: TuiKeybindings::default(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]

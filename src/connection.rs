@@ -31,7 +31,7 @@ pub async fn connect(connection: &str) -> AppResult<PgPool> {
 
 async fn connect_with(options: PgConnectOptions) -> Result<PgPool, sqlx::Error> {
     PgPoolOptions::new()
-        .max_connections(5)
+        .max_connections(1)
         .acquire_timeout(Duration::from_secs(10))
         .connect_with(options)
         .await

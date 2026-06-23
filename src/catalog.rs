@@ -1,10 +1,15 @@
-use std::io::{self, Write};
+use std::{
+    io::{self, Write},
+    sync::{Arc, RwLock},
+};
 
 use sqlx::{PgPool, Row};
 
 use crate::errors::AppResult;
 
 pub const METADATA_CONFIRM_RELATION_THRESHOLD: i64 = 1_000;
+
+pub type SharedCatalog = Arc<RwLock<Catalog>>;
 
 #[derive(Debug, Clone, Default)]
 pub struct Catalog {
@@ -127,6 +132,10 @@ impl Catalog {
     }
 }
 
+pub fn shared_catalog(catalog: Catalog) -> SharedCatalog {
+    Arc::new(RwLock::new(catalog))
+}
+
 pub fn should_confirm_metadata(relation_count: i64) -> bool {
     relation_count > METADATA_CONFIRM_RELATION_THRESHOLD
 }
@@ -186,6 +195,10 @@ async fn relation_count(pool: &PgPool) -> Result<i64, sqlx::Error> {
         from pg_catalog.pg_class c
         join pg_catalog.pg_namespace n on n.oid = c.relnamespace
         where c.relkind in ('r', 'p', 'v', 'm', 'f')
+          and n.nspname <> 'pg_catalog'
+          and n.nspname <> 'information_schema'
+          and n.nspname !~ '^pg_toast'
+          and n.nspname !~ '^pg_temp_'
         "#,
     )
     .fetch_one(pool)
@@ -199,6 +212,10 @@ async fn load_schemas(pool: &PgPool) -> Result<Vec<String>, sqlx::Error> {
         r#"
         select nspname as schema
         from pg_catalog.pg_namespace
+        where nspname <> 'pg_catalog'
+          and nspname <> 'information_schema'
+          and nspname !~ '^pg_toast'
+          and nspname !~ '^pg_temp_'
         order by nspname
         "#,
     )
@@ -217,6 +234,10 @@ async fn load_tables(pool: &PgPool) -> Result<Vec<TableInfo>, sqlx::Error> {
         from pg_catalog.pg_class c
         join pg_catalog.pg_namespace n on n.oid = c.relnamespace
         where c.relkind in ('r', 'p', 'v', 'm', 'f')
+          and n.nspname <> 'pg_catalog'
+          and n.nspname <> 'information_schema'
+          and n.nspname !~ '^pg_toast'
+          and n.nspname !~ '^pg_temp_'
         order by n.nspname, c.relname
         "#,
     )
@@ -247,6 +268,10 @@ async fn load_columns(pool: &PgPool) -> Result<Vec<ColumnInfo>, sqlx::Error> {
         where c.relkind in ('r', 'p', 'v', 'm', 'f')
           and a.attnum > 0
           and not a.attisdropped
+          and n.nspname <> 'pg_catalog'
+          and n.nspname <> 'information_schema'
+          and n.nspname !~ '^pg_toast'
+          and n.nspname !~ '^pg_temp_'
         order by n.nspname, c.relname, a.attnum
         "#,
     )

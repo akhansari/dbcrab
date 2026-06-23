@@ -117,12 +117,9 @@ fn run_result_grid(
 fn render_result_grid(frame: &mut Frame<'_>, grid: &ResultGrid, state: &mut GridViewState) {
     let frame_area = frame.area();
     let areas = if state.preview_open {
-        Layout::vertical([
-            Constraint::Percentage(50),
-            Constraint::Min(1),
-            Constraint::Length(1),
-        ])
-        .split(frame_area)
+        let table_height = Constraint::Percentage(preview_open_table_percentage(state.focus));
+        Layout::vertical([table_height, Constraint::Min(1), Constraint::Length(1)])
+            .split(frame_area)
     } else {
         Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).split(frame_area)
     };
@@ -138,7 +135,11 @@ fn render_result_grid(frame: &mut Frame<'_>, grid: &ResultGrid, state: &mut Grid
 
     if grid.column_count() == 0 {
         frame.render_widget(
-            Paragraph::new("Result has no columns").block(Block::default().borders(Borders::ALL)),
+            Paragraph::new("Result has no columns").block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(pane_border_style(state.focus == Focus::Table)),
+            ),
             table_area,
         );
     } else {
@@ -157,14 +158,18 @@ fn render_result_grid(frame: &mut Frame<'_>, grid: &ResultGrid, state: &mut Grid
         let widths =
             (0..visible_columns.len()).map(|_| Constraint::Ratio(1, visible_columns.len() as u32));
         let title = format!(
-            "Result set ({} rows, {} columns){}",
+            "Result set ({} rows, {} columns)",
             grid.row_count(),
-            grid.column_count(),
-            focus_marker(state.focus == Focus::Table)
+            grid.column_count()
         );
         let table = Table::new(rows, widths)
             .header(header)
-            .block(Block::default().borders(Borders::ALL).title(title))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(pane_border_style(state.focus == Focus::Table))
+                    .title(title),
+            )
             .column_spacing(1)
             .highlight_symbol("> ")
             .highlight_spacing(HighlightSpacing::Always)
@@ -189,9 +194,13 @@ fn render_result_grid(frame: &mut Frame<'_>, grid: &ResultGrid, state: &mut Grid
         state.set_visible_preview_rows(preview_area.height);
         let preview = state.preview_content(grid, preview_area.width);
         state.clamp_preview_scroll(preview.line_count);
-        let title = format!("Preview{}", focus_marker(state.focus == Focus::Preview));
         let paragraph = Paragraph::new(preview.text)
-            .block(Block::default().borders(Borders::ALL).title(title))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(pane_border_style(state.focus == Focus::Preview))
+                    .title("Preview"),
+            )
             .wrap(Wrap { trim: false })
             .scroll((state.preview_scroll as u16, 0));
         frame.render_widget(paragraph, preview_area);
@@ -226,17 +235,8 @@ fn status_line(grid: &ResultGrid, state: &GridViewState, visible_columns: Range<
     let first_visible_column = human_position(visible_columns.start, grid.column_count());
     let last_visible_column = visible_columns.end.min(grid.column_count());
 
-    let focus = if state.preview_open {
-        match state.focus {
-            Focus::Table => "table",
-            Focus::Preview => "preview",
-        }
-    } else {
-        "table"
-    };
-
     format!(
-        "row {row}/{}, column {column}/{} | visible columns {first_visible_column}-{last_visible_column} | focus: {focus} | configured keys move/preview/focus/quit",
+        "row {row}/{}, column {column}/{} | visible columns {first_visible_column}-{last_visible_column} | <enter> preview | <tab> focus",
         grid.row_count(),
         grid.column_count()
     )
@@ -246,8 +246,19 @@ fn human_position(index: usize, total: usize) -> usize {
     if total == 0 { 0 } else { index + 1 }
 }
 
-fn focus_marker(active: bool) -> &'static str {
-    if active { " [active]" } else { "" }
+fn pane_border_style(active: bool) -> Style {
+    if active {
+        Style::default()
+    } else {
+        Style::new().fg(Color::DarkGray).add_modifier(Modifier::DIM)
+    }
+}
+
+fn preview_open_table_percentage(focus: Focus) -> u16 {
+    match focus {
+        Focus::Table => 50,
+        Focus::Preview => 20,
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -741,6 +752,42 @@ mod tests {
 
         // Then
         assert_eq!(visible_columns, 3);
+    }
+
+    #[test]
+    fn status_line_shows_preview_controls_instead_of_focus() {
+        // Given
+        let grid = test_grid(3, 2);
+        let state = GridViewState::new();
+
+        // When
+        let status = status_line(&grid, &state, 0..3);
+
+        // Then
+        assert_eq!(
+            status,
+            "row 1/2, column 1/3 | visible columns 1-3 | <enter> preview | <tab> focus"
+        );
+    }
+
+    #[test]
+    fn pane_border_style_dims_only_inactive_panes() {
+        // When
+        let active = pane_border_style(true);
+        let inactive = pane_border_style(false);
+
+        // Then
+        assert_eq!(active.fg, None);
+        assert!(!active.add_modifier.contains(Modifier::DIM));
+        assert_eq!(inactive.fg, Some(Color::DarkGray));
+        assert!(inactive.add_modifier.contains(Modifier::DIM));
+    }
+
+    #[test]
+    fn preview_focus_gives_preview_more_vertical_space() {
+        // Then
+        assert_eq!(preview_open_table_percentage(Focus::Table), 50);
+        assert_eq!(preview_open_table_percentage(Focus::Preview), 20);
     }
 
     #[test]

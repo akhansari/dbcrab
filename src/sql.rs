@@ -180,16 +180,6 @@ pub fn split_complete_statements(input: &str) -> (Vec<String>, String) {
     (statements, input[start..].to_owned())
 }
 
-pub fn is_exit_statement(statement: &str) -> bool {
-    let normalized = statement
-        .trim()
-        .trim_end_matches(';')
-        .trim()
-        .to_ascii_lowercase();
-
-    matches!(normalized.as_str(), "exit" | "quit")
-}
-
 pub fn likely_returns_rows(statement: &str) -> bool {
     let Some(keyword) = first_keyword(statement) else {
         return false;
@@ -448,18 +438,6 @@ mod tests {
         // Then
         assert_eq!(statements, vec!["select 1;"]);
         assert_eq!(rest, "\nselect 2");
-    }
-
-    #[test]
-    fn exit_statement_accepts_exit_and_quit_with_semicolons() {
-        // Given
-        let statement = " quit ; ";
-
-        // When
-        let is_exit = is_exit_statement(statement);
-
-        // Then
-        assert!(is_exit);
     }
 
     #[test]

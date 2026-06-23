@@ -8,7 +8,12 @@ use crossterm::terminal;
 use sqlx::{Column, Row, TypeInfo, postgres::PgRow};
 use tabled::{
     builder::Builder,
-    settings::{Format, Modify, Style as TableStyle, Width, object::Segment, peaker::Priority},
+    settings::{
+        Color as TableColor, Format, Modify, Style as TableStyle, Width,
+        object::{Columns, Rows, Segment},
+        peaker::Priority,
+        style::BorderColor,
+    },
 };
 
 pub const LARGE_RESULT_WARNING_ROWS: usize = 1_000;
@@ -27,11 +32,7 @@ pub struct ResultGrid {
 }
 
 impl ResultGrid {
-    pub(crate) fn new(
-        columns: Vec<String>,
-        column_types: Vec<String>,
-        rows: Vec<Vec<String>>,
-    ) -> Self {
+    pub fn new(columns: Vec<String>, column_types: Vec<String>, rows: Vec<Vec<String>>) -> Self {
         Self {
             columns,
             column_types,
@@ -66,6 +67,20 @@ impl ResultGrid {
             .collect::<Vec<_>>();
 
         Self::new(column_names, column_types, rows)
+    }
+
+    pub fn from_records(
+        columns: impl IntoIterator<Item = impl Into<String>>,
+        rows: impl IntoIterator<Item = impl IntoIterator<Item = impl Into<String>>>,
+    ) -> Self {
+        let columns = columns.into_iter().map(Into::into).collect::<Vec<_>>();
+        let column_types = vec!["text".to_owned(); columns.len()];
+        let rows = rows
+            .into_iter()
+            .map(|row| row.into_iter().map(Into::into).collect::<Vec<_>>())
+            .collect::<Vec<_>>();
+
+        Self::new(columns, column_types, rows)
     }
 
     pub fn columns(&self) -> &[String] {
@@ -112,9 +127,9 @@ pub enum DisplayMode {
 impl DisplayMode {
     pub fn next(self) -> Self {
         match self {
-            Self::Auto => Self::Inline,
-            Self::Inline => Self::Full,
-            Self::Full => Self::Auto,
+            Self::Auto => Self::Full,
+            Self::Full => Self::Inline,
+            Self::Inline => Self::Auto,
         }
     }
 
@@ -186,6 +201,30 @@ pub fn render_rows(rows: &[PgRow]) -> String {
     output
 }
 
+pub fn render_grid(grid: &ResultGrid) -> String {
+    if grid.row_count() == 0 {
+        return render_row_count(0);
+    }
+
+    let table = if grid.row_count() == 1 {
+        render_expanded_table(grid_expanded_builder(grid), terminal_table_width())
+    } else {
+        render_table(grid_builder(grid), terminal_table_width())
+    };
+
+    let mut output = String::new();
+    if grid.row_count() > LARGE_RESULT_WARNING_ROWS {
+        output.push_str(&format!(
+            "warning: rendering {} rows; add a filter for large metadata results\n",
+            grid.row_count()
+        ));
+    }
+    output.push_str(&table);
+    output.push('\n');
+    output.push_str(&render_row_count(grid.row_count()));
+    output
+}
+
 pub fn rows_display(rows: &[PgRow]) -> RowsDisplay {
     if rows.is_empty() {
         return RowsDisplay::Inline(render_row_count(0));
@@ -200,6 +239,26 @@ pub fn rows_display(rows: &[PgRow]) -> RowsDisplay {
     }
 
     let inline = render_rows(rows);
+    if should_use_tui(&grid, Some(&inline), dimensions, interactive) {
+        RowsDisplay::Tui(grid)
+    } else {
+        RowsDisplay::Inline(inline)
+    }
+}
+
+pub fn grid_display(grid: ResultGrid) -> RowsDisplay {
+    if grid.row_count() == 0 {
+        return RowsDisplay::Inline(render_row_count(0));
+    }
+
+    let dimensions = terminal_dimensions();
+    let interactive = io::stdout().is_terminal();
+
+    if should_use_tui(&grid, None, dimensions, interactive) {
+        return RowsDisplay::Tui(grid);
+    }
+
+    let inline = render_grid(&grid);
     if should_use_tui(&grid, Some(&inline), dimensions, interactive) {
         RowsDisplay::Tui(grid)
     } else {
@@ -224,11 +283,31 @@ fn rows_builder(rows: &[PgRow]) -> Builder {
     builder
 }
 
+fn grid_builder(grid: &ResultGrid) -> Builder {
+    let mut builder = Builder::new();
+    builder.push_record(grid.columns().iter().cloned());
+
+    for row in grid.rows() {
+        builder.push_record(row.iter().cloned());
+    }
+
+    builder
+}
+
 fn expanded_display_builder(row: &PgRow) -> Builder {
     expanded_builder(row.columns().iter().enumerate().map(|(index, column)| {
         (
             column.name().to_owned(),
             render_expanded_cell(row, index, column.type_info().name()),
+        )
+    }))
+}
+
+fn grid_expanded_builder(grid: &ResultGrid) -> Builder {
+    expanded_builder(grid.columns().iter().enumerate().map(|(index, column)| {
+        (
+            column.clone(),
+            grid.cell(0, index).unwrap_or_default().to_owned(),
         )
     }))
 }
@@ -252,6 +331,8 @@ fn render_table(builder: Builder, width: usize) -> String {
             .priority(Priority::max(false)),
     );
     table.with(Modify::new(Segment::all()).with(Format::content(limit_cell_height)));
+    table.with(Modify::new(Segment::all()).with(BorderColor::filled(dim_border_color())));
+    table.with(Modify::new(Rows::first()).with(TableColor::FG_YELLOW | TableColor::BOLD));
     table.to_string()
 }
 
@@ -263,7 +344,13 @@ fn render_expanded_table(builder: Builder, width: usize) -> String {
             .keep_words(true)
             .priority(Priority::max(false)),
     );
+    table.with(Modify::new(Segment::all()).with(BorderColor::filled(dim_border_color())));
+    table.with(Modify::new(Columns::first()).with(TableColor::FG_YELLOW | TableColor::BOLD));
     table.to_string()
+}
+
+fn dim_border_color() -> TableColor {
+    TableColor::FG_BRIGHT_BLACK | TableColor::new("\u{1b}[2m", "\u{1b}[22m")
 }
 
 fn render_cell(row: &PgRow, index: usize, type_name: &str) -> String {
@@ -573,18 +660,18 @@ mod tests {
     }
 
     #[test]
-    fn display_mode_cycles_auto_inline_full() {
+    fn display_mode_cycles_auto_full_inline() {
         // Given
         let mode = DisplayMode::Auto;
 
         // When
-        let inline = mode.next();
-        let full = inline.next();
-        let auto = full.next();
+        let full = mode.next();
+        let inline = full.next();
+        let auto = inline.next();
 
         // Then
-        assert_eq!(inline, DisplayMode::Inline);
         assert_eq!(full, DisplayMode::Full);
+        assert_eq!(inline, DisplayMode::Inline);
         assert_eq!(auto, DisplayMode::Auto);
     }
 
@@ -630,6 +717,72 @@ mod tests {
         assert!(table.contains("1"));
         assert!(table.contains("email"));
         assert!(table.contains("user@example.com"));
+    }
+
+    #[test]
+    fn normal_display_colors_header() {
+        // Given
+        let mut builder = Builder::new();
+        builder.push_record(["id", "email"]);
+        builder.push_record(["1", "user@example.com"]);
+
+        // When
+        let table = render_table(builder, 80);
+
+        // Then
+        assert!(table.contains("\u{1b}[33m"));
+        assert!(table.contains("\u{1b}[1m"));
+        assert!(table.contains("id"));
+        assert!(table.contains("email"));
+    }
+
+    #[test]
+    fn normal_display_dims_borders() {
+        // Given
+        let mut builder = Builder::new();
+        builder.push_record(["id", "email"]);
+        builder.push_record(["1", "user@example.com"]);
+
+        // When
+        let table = render_table(builder, 80);
+
+        // Then
+        assert!(table.contains("\u{1b}[90m"));
+        assert!(table.contains("\u{1b}[2m"));
+        assert!(table.contains("\u{1b}[22m"));
+    }
+
+    #[test]
+    fn expanded_display_colors_first_column() {
+        // Given
+        let fields = vec![
+            ("id".to_owned(), "1".to_owned()),
+            ("email".to_owned(), "user@example.com".to_owned()),
+        ];
+
+        // When
+        let table = render_expanded_table(expanded_builder(fields), 80);
+
+        // Then
+        assert!(table.contains("\u{1b}[33m"));
+        assert!(table.contains("\u{1b}[1m"));
+        assert!(table.contains("id"));
+        assert!(table.contains("email"));
+        assert!(!table.contains("\u{1b}[33m\u{1b}[1muser@example.com"));
+    }
+
+    #[test]
+    fn expanded_display_dims_borders() {
+        // Given
+        let fields = vec![("id".to_owned(), "1".to_owned())];
+
+        // When
+        let table = render_expanded_table(expanded_builder(fields), 80);
+
+        // Then
+        assert!(table.contains("\u{1b}[90m"));
+        assert!(table.contains("\u{1b}[2m"));
+        assert!(table.contains("\u{1b}[22m"));
     }
 
     #[test]
