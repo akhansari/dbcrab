@@ -29,7 +29,9 @@ jobs:
           cargo fmt --check
 
       - name: Check common mistakes
-        run: cargo clippy --locked
+        run: |
+          rustup component add clippy
+          cargo clippy --locked
 
       - name: Check errors
         run: cargo check --locked

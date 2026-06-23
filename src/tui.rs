@@ -157,18 +157,12 @@ fn render_result_grid(frame: &mut Frame<'_>, grid: &ResultGrid, state: &mut Grid
         .style(Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD));
         let widths =
             (0..visible_columns.len()).map(|_| Constraint::Ratio(1, visible_columns.len() as u32));
-        let title = format!(
-            "Result set ({} rows, {} columns)",
-            grid.row_count(),
-            grid.column_count()
-        );
         let table = Table::new(rows, widths)
             .header(header)
             .block(
                 Block::default()
                     .borders(Borders::ALL)
-                    .border_style(pane_border_style(state.focus == Focus::Table))
-                    .title(title),
+                    .border_style(pane_border_style(state.focus == Focus::Table)),
             )
             .column_spacing(1)
             .highlight_symbol("> ")
@@ -199,7 +193,7 @@ fn render_result_grid(frame: &mut Frame<'_>, grid: &ResultGrid, state: &mut Grid
                 Block::default()
                     .borders(Borders::ALL)
                     .border_style(pane_border_style(state.focus == Focus::Preview))
-                    .title("Preview"),
+                    .title(preview_title(grid, state)),
             )
             .wrap(Wrap { trim: false })
             .scroll((state.preview_scroll as u16, 0));
@@ -211,6 +205,12 @@ fn render_result_grid(frame: &mut Frame<'_>, grid: &ResultGrid, state: &mut Grid
             .style(Style::new().fg(Color::DarkGray)),
         status_area,
     );
+}
+
+fn preview_title(grid: &ResultGrid, state: &GridViewState) -> String {
+    grid.columns()
+        .get(state.selected_col)
+        .map_or_else(|| "Preview".to_owned(), ToOwned::to_owned)
 }
 
 fn compact_cell(value: &str) -> String {
@@ -236,7 +236,7 @@ fn status_line(grid: &ResultGrid, state: &GridViewState, visible_columns: Range<
     let last_visible_column = visible_columns.end.min(grid.column_count());
 
     format!(
-        "row {row}/{}, column {column}/{} | visible columns {first_visible_column}-{last_visible_column} | <enter> preview | <tab> focus",
+        "row {row}/{}, column {column}/{} | visible columns {first_visible_column}-{last_visible_column} | <enter> preview | <tab> switch pane",
         grid.row_count(),
         grid.column_count()
     )
@@ -766,7 +766,7 @@ mod tests {
         // Then
         assert_eq!(
             status,
-            "row 1/2, column 1/3 | visible columns 1-3 | <enter> preview | <tab> focus"
+            "row 1/2, column 1/3 | visible columns 1-3 | <enter> preview | <tab> switch pane"
         );
     }
 
