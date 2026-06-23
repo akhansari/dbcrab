@@ -4,6 +4,8 @@ use reedline::{Prompt, PromptEditMode, PromptHistorySearch};
 
 use crate::render::{DisplayMode, DisplayModeState};
 
+const HISTORY_SEARCH_INDICATOR: &str = "_ ";
+
 pub struct DbPrompt {
     display_mode: DisplayModeState,
 }
@@ -40,7 +42,7 @@ impl Prompt for DbPrompt {
         &self,
         _history_search: PromptHistorySearch,
     ) -> Cow<'_, str> {
-        Cow::Borrowed("_ ")
+        Cow::Borrowed(HISTORY_SEARCH_INDICATOR)
     }
 }
 
@@ -65,13 +67,14 @@ impl Prompt for CommandPrompt {
         &self,
         _history_search: PromptHistorySearch,
     ) -> Cow<'_, str> {
-        Cow::Borrowed(": ")
+        Cow::Borrowed(HISTORY_SEARCH_INDICATOR)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use reedline::PromptHistorySearchStatus;
 
     #[test]
     fn right_prompt_hides_auto_display_mode() {
@@ -109,6 +112,19 @@ mod tests {
 
         // Then
         assert_eq!(indicator, ": ");
+    }
+
+    #[test]
+    fn command_prompt_uses_underscore_history_search_indicator() {
+        // Given
+        let prompt = CommandPrompt;
+        let search = PromptHistorySearch::new(PromptHistorySearchStatus::Passing, String::new());
+
+        // When
+        let indicator = prompt.render_prompt_history_search_indicator(search);
+
+        // Then
+        assert_eq!(indicator, "_ ");
     }
 
     #[test]

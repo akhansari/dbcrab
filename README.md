@@ -47,6 +47,10 @@ Use `Tab` or `Ctrl-Space` to open completion suggestions.
 Press `:` on an empty SQL prompt to enter command mode. Commands do not need a
 semicolon.
 
+Press `Esc` or `Ctrl-D` to return to the SQL prompt. With `edit_mode = "vi"`,
+command mode uses Vi editing too, so `Esc` first leaves insert mode and a second
+`Esc` returns to the SQL prompt.
+
 Common commands:
 
 - `help`, show all commands.
@@ -122,9 +126,9 @@ existing defaults.
 
 ```toml
 [keybindings.remap]
-# Remaps raw input before prompt, command, TUI, and Reedline Vi grammar handling.
+# Remaps navigation/action input. Plain character swaps are skipped while typing.
 j.swap = "n"
-# Explicit modified remaps are opt-in.
+# Modified remaps still apply in typing modes.
 ctrl-h.swap = "ctrl-i"
 
 [keybindings.prompt]
@@ -154,6 +158,8 @@ quit.add = ["q"]
 
 Prompt line-editor sections use Reedline action names such as `ClearScreen`,
 `MoveToLineStart`, `BackspaceWord`, `Undo`, and `PasteCutBufferBefore`.
-Plain character remaps also apply to shifted input, so `h.swap = "i"` maps
-`h <-> i` and `H <-> I`. Modified keys such as `ctrl-h` are only remapped when
-listed explicitly.
+Plain character remaps also apply to shifted input in non-typing contexts, so
+`j.swap = "n"` maps `j <-> n` and `J <-> N` in TUI and Vi normal mode. While
+typing SQL in Emacs/Vi insert mode or entering meta-commands, unmodified and
+Shift-only characters are left unchanged. Modified keys such as `ctrl-j` are
+only remapped when listed explicitly and still apply in typing modes.

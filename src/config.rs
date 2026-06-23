@@ -129,7 +129,7 @@ struct KeyRemap {
 }
 
 impl KeyRemaps {
-    fn set(&mut self, from: KeyBinding, to: KeyBinding) {
+    pub(crate) fn set(&mut self, from: KeyBinding, to: KeyBinding) {
         self.remaps.retain(|remap| remap.from != from);
         self.remaps.push(KeyRemap { from, to });
     }
@@ -155,6 +155,21 @@ impl KeyRemaps {
         }
 
         self.remap_shifted_plain_char(key).unwrap_or(key)
+    }
+
+    pub(crate) fn remap_text_input_event(&self, event: Event) -> Event {
+        match event {
+            Event::Key(key) => Event::Key(self.remap_text_input_key_event(key)),
+            event => event,
+        }
+    }
+
+    pub(crate) fn remap_text_input_key_event(&self, key: KeyEvent) -> KeyEvent {
+        if is_text_input_char_key(key) {
+            return key;
+        }
+
+        self.remap_key_event(key)
     }
 
     fn remap_shifted_plain_char(&self, key: KeyEvent) -> Option<KeyEvent> {
@@ -1441,6 +1456,10 @@ fn parse_key_binding(name: &str) -> Result<KeyBinding, String> {
 fn modifiers_without_shift(mut modifiers: KeyModifiers) -> KeyModifiers {
     modifiers.remove(KeyModifiers::SHIFT);
     modifiers
+}
+
+fn is_text_input_char_key(key: KeyEvent) -> bool {
+    matches!(key.code, KeyCode::Char(_)) && modifiers_without_shift(key.modifiers).is_empty()
 }
 
 fn key_code_name(code: KeyCode) -> String {

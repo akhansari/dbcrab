@@ -24,7 +24,7 @@ where
 {
     let matches = Command::new("dbcrab")
         .version(env!("CARGO_PKG_VERSION"))
-        .about("A smart PostgreSQL REPL")
+        .about("Modern REPL-first PostgreSQL client.")
         .arg(
             Arg::new("default-keybindings")
                 .long("default-keybindings")

@@ -28,14 +28,14 @@ DBCrab is a modern REPL-first PostgreSQL client.
 
 ## App features
 
-- Bad input, SQL errors, and connection failures should return actionable errors without crashing the session.
-
-- REPL-first PostgreSQL client behavior
-- SQL execution and result rendering
-- Optional TUI display mode for richer result exploration
-- Schema-aware and context-aware auto-complete and suggestions
-- Meta-commands like database discovery and helpers
-- Error handling expectations for bad SQL, bad input, and connection failures
+- There are two editors: SQL and Command.
+- Each editor supports two edit modes: Emacs and Vi.
+- Each editor supports reverse history search.
+  - Only the SQL editor persists history across sessions.
+- Both editors share the same core editing behavior and configuration.
+- There are two explicit result display modes: Inline and Full (TUI), plus Auto selection.
+  - The TUI is optional and provides richer result exploration.
+- SQL editor has schema-aware and context-aware auto-complete and suggestions.
 
 ## Rust Standards
 
