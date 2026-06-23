@@ -21,7 +21,7 @@ Esc = ["esc"]
 CtrlC = ["ctrl-c"]
 CtrlD = ["ctrl-d"]
 ClearScreen = ["ctrl-l"]
-SearchHistory = ["ctrl-r"]
+HistoryMenu = ["ctrl-r"]
 OpenEditor = ["ctrl-o"]
 
 Enter = ["enter", "ctrl-j"]
@@ -102,6 +102,15 @@ focus_next = ["tab"]
 
 quit = ["q", "esc", "ctrl-c"]
 "#;
+
+pub(crate) const HISTORY_MENU: &str = "history_menu";
+
+pub(crate) fn history_menu_event() -> ReedlineEvent {
+    ReedlineEvent::UntilFound(vec![
+        ReedlineEvent::Menu(HISTORY_MENU.to_owned()),
+        ReedlineEvent::MenuPageNext,
+    ])
+}
 
 #[derive(Debug, Clone, Eq, PartialEq, Default)]
 pub struct AppConfig {
@@ -574,7 +583,7 @@ enum LineEditorAction {
     CtrlC,
     CtrlD,
     ClearScreen,
-    SearchHistory,
+    HistoryMenu,
     OpenEditor,
     Enter,
     InsertNewline,
@@ -670,7 +679,7 @@ impl LineEditorAction {
             Action::CtrlC => RE::CtrlC,
             Action::CtrlD => RE::CtrlD,
             Action::ClearScreen => RE::ClearScreen,
-            Action::SearchHistory => RE::SearchHistory,
+            Action::HistoryMenu => history_menu_event(),
             Action::OpenEditor => RE::OpenEditor,
             Action::Enter => RE::Enter,
             Action::InsertNewline => edit(EC::InsertNewline),
@@ -1101,7 +1110,7 @@ fn line_editor_action_from_name(name: &str) -> Option<LineEditorAction> {
         "ctrlc" | "controlc" => Some(Action::CtrlC),
         "ctrld" | "controld" => Some(Action::CtrlD),
         "clearscreen" => Some(Action::ClearScreen),
-        "searchhistory" => Some(Action::SearchHistory),
+        "historymenu" | "searchhistory" => Some(Action::HistoryMenu),
         "openeditor" => Some(Action::OpenEditor),
         "enter" => Some(Action::Enter),
         "insertnewline" => Some(Action::InsertNewline),
@@ -1681,6 +1690,23 @@ mod tests {
         assert_eq!(
             keybindings.find_binding(KeyModifiers::CONTROL, KeyCode::Char('l')),
             None
+        );
+    }
+
+    #[test]
+    fn search_history_config_key_maps_to_history_menu() {
+        // Given
+        let text = "[keybindings.prompt.insert]\nSearchHistory = [\"ctrl-x\"]\n";
+        let mut keybindings = reedline::default_emacs_keybindings();
+
+        // When
+        let config = parse_config(text).expect("config should parse");
+        config.keybindings.prompt.insert.apply_to(&mut keybindings);
+
+        // Then
+        assert_eq!(
+            keybindings.find_binding(KeyModifiers::CONTROL, KeyCode::Char('x')),
+            Some(history_menu_event())
         );
     }
 

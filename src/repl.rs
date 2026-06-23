@@ -17,14 +17,15 @@ use crossterm::{
     execute,
 };
 use reedline::{
-    ColumnarMenu, CursorConfig, FileBackedHistory, MenuBuilder, Reedline, ReedlineMenu, Signal,
+    ColumnarMenu, CursorConfig, FileBackedHistory, ListMenu, MenuBuilder, Reedline, ReedlineMenu,
+    Signal,
 };
 use sqlx::PgPool;
 
 use crate::{
     catalog::SharedCatalog,
     completion::{SqlCompleter, shared_completion_line_snapshot},
-    config::{ConfigEditMode, KeyRemaps, KeybindingsConfig, TuiKeybindings},
+    config::{ConfigEditMode, HISTORY_MENU, KeyRemaps, KeybindingsConfig, TuiKeybindings},
     errors::AppResult,
     highlight::SqlHighlighter,
     meta::{self, CommandCompleter, CommandHighlighter, CommandOutcome, CommandValidator},
@@ -35,10 +36,7 @@ use crate::{
 };
 
 use self::{
-    edit::{
-        CommandEditMode, SqlEditMode, command_history_search_edit_mode, command_inner_edit_mode,
-        sql_history_search_edit_mode, sql_inner_edit_mode,
-    },
+    edit::{CommandEditMode, SqlEditMode, command_inner_edit_mode, sql_inner_edit_mode},
     history::{HISTORY_LIMIT, persistent_history},
     menu::FullBufferCompletionMenu,
     output::render_meta_output,
@@ -137,7 +135,6 @@ fn build_sql_editor(
     ));
     let sql_edit_mode = Box::new(SqlEditMode::new(
         sql_inner_edit_mode(edit_mode, keybindings),
-        sql_history_search_edit_mode(edit_mode, keybindings),
         keybindings.remaps.clone(),
         keybindings.prompt.cycle_display.clone(),
         keybindings.prompt.command_mode.clone(),
@@ -156,6 +153,11 @@ fn build_sql_editor(
                 SqlCompleter::new(catalog).with_completion_line(completion_line),
             ))
             .with_menu(ReedlineMenu::EngineCompleter(completion_menu))
+            .with_menu(ReedlineMenu::HistoryMenu(Box::new(
+                ListMenu::default()
+                    .with_name(HISTORY_MENU)
+                    .with_only_buffer_difference(false),
+            )))
             .with_edit_mode(sql_edit_mode)
             .with_highlighter(Box::new(SqlHighlighter))
             .with_validator(Box::new(SqlValidator))
@@ -176,9 +178,13 @@ fn build_command_editor(
             .with_history(history)
             .with_completer(Box::new(CommandCompleter::new(catalog)))
             .with_menu(ReedlineMenu::EngineCompleter(completion_menu))
+            .with_menu(ReedlineMenu::HistoryMenu(Box::new(
+                ListMenu::default()
+                    .with_name(HISTORY_MENU)
+                    .with_only_buffer_difference(false),
+            )))
             .with_edit_mode(Box::new(CommandEditMode::new(
                 command_inner_edit_mode(edit_mode, keybindings),
-                command_history_search_edit_mode(edit_mode, keybindings),
                 keybindings.command.clone(),
                 keybindings.remaps.clone(),
             )))

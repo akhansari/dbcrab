@@ -10,7 +10,10 @@ use reedline::{
 };
 
 use crate::{
-    config::{CommandKeybindings, ConfigEditMode, KeyBinding, KeyRemaps, KeybindingsConfig},
+    config::{
+        CommandKeybindings, ConfigEditMode, KeyBinding, KeyRemaps, KeybindingsConfig,
+        history_menu_event,
+    },
     render::DisplayModeState,
 };
 
@@ -21,13 +24,11 @@ use super::{
 
 pub(super) struct SqlEditMode {
     inner: EditorInnerEditMode,
-    history_search: Emacs,
     key_remaps: KeyRemaps,
     cycle_display: Vec<KeyBinding>,
     command_mode: Vec<KeyBinding>,
     display_mode: DisplayModeState,
     command_mode_ready: Arc<AtomicBool>,
-    history_search_active: bool,
     tracked_sql_input: TrackedSqlInput,
 }
 
@@ -59,7 +60,6 @@ impl EditorInnerEditMode {
 impl SqlEditMode {
     pub(super) fn new(
         inner: EditorInnerEditMode,
-        history_search: Emacs,
         key_remaps: KeyRemaps,
         cycle_display: Vec<KeyBinding>,
         command_mode: Vec<KeyBinding>,
@@ -68,13 +68,11 @@ impl SqlEditMode {
     ) -> Self {
         Self {
             inner,
-            history_search,
             key_remaps,
             cycle_display,
             command_mode,
             display_mode,
             command_mode_ready,
-            history_search_active: false,
             tracked_sql_input: TrackedSqlInput::default(),
         }
     }
@@ -94,17 +92,7 @@ impl SqlEditMode {
 impl EditMode for SqlEditMode {
     fn parse_event(&mut self, event: ReedlineRawEvent) -> ReedlineEvent {
         let event = Event::from(event);
-        let event = if self.history_search_active {
-            self.key_remaps.remap_text_input_event(event)
-        } else {
-            self.remap_event_for_current_mode(event)
-        };
-
-        if self.history_search_active {
-            let reedline_event = parse_emacs_event(&mut self.history_search, event);
-            update_history_search_state(&mut self.history_search_active, &reedline_event);
-            return reedline_event;
-        }
+        let event = self.remap_event_for_current_mode(event);
 
         if self.command_mode_ready.load(Ordering::Relaxed) {
             self.tracked_sql_input.reset();
@@ -125,7 +113,6 @@ impl EditMode for SqlEditMode {
         self.tracked_sql_input.apply_event(&reedline_event);
         self.command_mode_ready
             .store(self.tracked_sql_input.is_known_empty(), Ordering::Relaxed);
-        update_history_search_state(&mut self.history_search_active, &reedline_event);
 
         reedline_event
     }
@@ -220,25 +207,20 @@ impl TrackedSqlInput {
 
 pub(super) struct CommandEditMode {
     inner: EditorInnerEditMode,
-    history_search: Emacs,
     cancel: Vec<KeyBinding>,
     key_remaps: KeyRemaps,
-    history_search_active: bool,
 }
 
 impl CommandEditMode {
     pub(super) fn new(
         inner: EditorInnerEditMode,
-        history_search: Emacs,
         keybindings_config: CommandKeybindings,
         key_remaps: KeyRemaps,
     ) -> Self {
         Self {
             inner,
-            history_search,
             cancel: keybindings_config.cancel,
             key_remaps,
-            history_search_active: false,
         }
     }
 
@@ -257,20 +239,12 @@ impl CommandEditMode {
 impl EditMode for CommandEditMode {
     fn parse_event(&mut self, event: ReedlineRawEvent) -> ReedlineEvent {
         let event = self.key_remaps.remap_text_input_event(Event::from(event));
-        if self.history_search_active {
-            let reedline_event = parse_emacs_event(&mut self.history_search, event);
-            update_history_search_state(&mut self.history_search_active, &reedline_event);
-            return reedline_event;
-        }
 
         if self.should_cancel(&event) {
             return ReedlineEvent::ExecuteHostCommand(COMMAND_CANCEL_HOST_COMMAND.to_owned());
         }
 
-        let reedline_event = self.inner.parse_event(event);
-        update_history_search_state(&mut self.history_search_active, &reedline_event);
-
-        reedline_event
+        self.inner.parse_event(event)
     }
 
     fn edit_mode(&self) -> PromptEditMode {
@@ -293,20 +267,9 @@ pub(super) fn sql_inner_edit_mode(
     }
 }
 
-pub(super) fn sql_history_search_edit_mode(
-    edit_mode: ConfigEditMode,
-    config: &KeybindingsConfig,
-) -> Emacs {
-    let keybindings = match edit_mode {
-        ConfigEditMode::Emacs => sql_emacs_keybindings(config),
-        ConfigEditMode::Vi => sql_vi_history_search_keybindings(config),
-    };
-
-    Emacs::new(keybindings)
-}
-
 fn sql_emacs_keybindings(config: &KeybindingsConfig) -> reedline::Keybindings {
     let mut keybindings = default_emacs_keybindings();
+    add_history_menu_keybinding(&mut keybindings);
     config.prompt.insert.apply_to(&mut keybindings);
     config.prompt.emacs.apply_to(&mut keybindings);
     add_completion_keybindings(&mut keybindings, &config.prompt.complete, COMPLETION_MENU);
@@ -325,16 +288,7 @@ fn sql_vi_keybindings(
 
 fn sql_vi_insert_keybindings(config: &KeybindingsConfig) -> reedline::Keybindings {
     let mut insert = default_vi_insert_keybindings();
-    config.prompt.insert.apply_to(&mut insert);
-    config.prompt.vi_insert.apply_to(&mut insert);
-    add_completion_keybindings(&mut insert, &config.prompt.complete, COMPLETION_MENU);
-
-    insert
-}
-
-fn sql_vi_history_search_keybindings(config: &KeybindingsConfig) -> reedline::Keybindings {
-    let mut insert = default_vi_insert_keybindings();
-    add_history_search_accept_keybindings(&mut insert);
+    add_history_menu_keybinding(&mut insert);
     config.prompt.insert.apply_to(&mut insert);
     config.prompt.vi_insert.apply_to(&mut insert);
     add_completion_keybindings(&mut insert, &config.prompt.complete, COMPLETION_MENU);
@@ -344,6 +298,7 @@ fn sql_vi_history_search_keybindings(config: &KeybindingsConfig) -> reedline::Ke
 
 fn sql_vi_normal_keybindings(config: &KeybindingsConfig) -> reedline::Keybindings {
     let mut normal = default_vi_normal_keybindings();
+    add_history_menu_keybinding(&mut normal);
     config.prompt.vi_normal.apply_to(&mut normal);
 
     normal
@@ -364,20 +319,9 @@ pub(super) fn command_inner_edit_mode(
     }
 }
 
-pub(super) fn command_history_search_edit_mode(
-    edit_mode: ConfigEditMode,
-    keybindings: &KeybindingsConfig,
-) -> Emacs {
-    let keybindings = match edit_mode {
-        ConfigEditMode::Emacs => command_emacs_keybindings(keybindings),
-        ConfigEditMode::Vi => command_vi_history_search_keybindings(keybindings),
-    };
-
-    Emacs::new(keybindings)
-}
-
 fn command_emacs_keybindings(keybindings: &KeybindingsConfig) -> reedline::Keybindings {
     let mut editor_keybindings = default_emacs_keybindings();
+    add_history_menu_keybinding(&mut editor_keybindings);
     keybindings.prompt.insert.apply_to(&mut editor_keybindings);
     keybindings.prompt.emacs.apply_to(&mut editor_keybindings);
     keybindings.command.editor.apply_to(&mut editor_keybindings);
@@ -396,6 +340,7 @@ fn command_vi_keybindings(
     let insert = command_vi_insert_keybindings(keybindings);
 
     let mut normal = default_vi_normal_keybindings();
+    add_history_menu_keybinding(&mut normal);
     keybindings.prompt.vi_normal.apply_to(&mut normal);
 
     (insert, normal)
@@ -403,6 +348,7 @@ fn command_vi_keybindings(
 
 fn command_vi_insert_keybindings(keybindings: &KeybindingsConfig) -> reedline::Keybindings {
     let mut insert = default_vi_insert_keybindings();
+    add_history_menu_keybinding(&mut insert);
     keybindings.prompt.insert.apply_to(&mut insert);
     keybindings.prompt.vi_insert.apply_to(&mut insert);
     keybindings.command.editor.apply_to(&mut insert);
@@ -415,27 +361,12 @@ fn command_vi_insert_keybindings(keybindings: &KeybindingsConfig) -> reedline::K
     insert
 }
 
-fn command_vi_history_search_keybindings(keybindings: &KeybindingsConfig) -> reedline::Keybindings {
-    let mut insert = default_vi_insert_keybindings();
-    add_history_search_accept_keybindings(&mut insert);
-    keybindings.prompt.insert.apply_to(&mut insert);
-    keybindings.prompt.vi_insert.apply_to(&mut insert);
-    keybindings.command.editor.apply_to(&mut insert);
-    add_completion_keybindings(
-        &mut insert,
-        &keybindings.command.complete,
-        COMMAND_COMPLETION_MENU,
-    );
-
-    insert
-}
-
-fn add_history_search_accept_keybindings(keybindings: &mut reedline::Keybindings) {
-    keybindings.add_binding(KeyModifiers::NONE, KeyCode::Enter, ReedlineEvent::Enter);
+fn add_history_menu_keybinding(keybindings: &mut reedline::Keybindings) {
+    keybindings.remove_binding(KeyModifiers::CONTROL, KeyCode::Char('r'));
     keybindings.add_binding(
         KeyModifiers::CONTROL,
-        KeyCode::Char('j'),
-        ReedlineEvent::Enter,
+        KeyCode::Char('r'),
+        history_menu_event(),
     );
 }
 
@@ -465,49 +396,6 @@ fn is_unmodified_escape(event: &Event) -> bool {
     matches!(event, Event::Key(key) if key.code == KeyCode::Esc && key.modifiers == KeyModifiers::NONE)
 }
 
-fn parse_emacs_event(edit_mode: &mut Emacs, event: Event) -> ReedlineEvent {
-    let Ok(event) = ReedlineRawEvent::try_from(event) else {
-        return ReedlineEvent::None;
-    };
-
-    edit_mode.parse_event(event)
-}
-
-fn update_history_search_state(active: &mut bool, event: &ReedlineEvent) {
-    if *active && exits_history_search(event) {
-        *active = false;
-    }
-    if enters_history_search(event) {
-        *active = true;
-    }
-}
-
-fn enters_history_search(event: &ReedlineEvent) -> bool {
-    match event {
-        ReedlineEvent::SearchHistory => true,
-        ReedlineEvent::Multiple(events) | ReedlineEvent::UntilFound(events) => {
-            events.iter().any(enters_history_search)
-        }
-        _ => false,
-    }
-}
-
-fn exits_history_search(event: &ReedlineEvent) -> bool {
-    match event {
-        ReedlineEvent::Esc
-        | ReedlineEvent::CtrlC
-        | ReedlineEvent::CtrlD
-        | ReedlineEvent::Enter
-        | ReedlineEvent::Submit
-        | ReedlineEvent::SubmitOrNewline
-        | ReedlineEvent::HistoryHintComplete => true,
-        ReedlineEvent::Multiple(events) | ReedlineEvent::UntilFound(events) => {
-            events.iter().any(exits_history_search)
-        }
-        _ => false,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -530,7 +418,6 @@ mod tests {
         let keybindings = KeybindingsConfig::default();
         SqlEditMode::new(
             sql_inner_edit_mode(edit_mode, &keybindings),
-            sql_history_search_edit_mode(edit_mode, &keybindings),
             key_remaps,
             keybindings.prompt.cycle_display,
             keybindings.prompt.command_mode,
@@ -554,7 +441,6 @@ mod tests {
         let keybindings = KeybindingsConfig::default();
         CommandEditMode::new(
             command_inner_edit_mode(edit_mode, &keybindings),
-            command_history_search_edit_mode(edit_mode, &keybindings),
             keybindings.command,
             key_remaps,
         )
@@ -616,7 +502,7 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_r_opens_history_search() {
+    fn ctrl_r_opens_history_menu() {
         // Given
         let keybindings = completion_keybindings();
 
@@ -624,7 +510,7 @@ mod tests {
         let event = keybindings.find_binding(KeyModifiers::CONTROL, KeyCode::Char('r'));
 
         // Then
-        assert_eq!(event, Some(ReedlineEvent::SearchHistory));
+        assert_eq!(event, Some(history_menu_event()));
     }
 
     #[test]
@@ -735,7 +621,7 @@ mod tests {
     }
 
     #[test]
-    fn prompt_ctrl_r_reaches_history_search() {
+    fn prompt_ctrl_r_reaches_history_menu() {
         // Given
         let display_mode = DisplayModeState::new();
         let mut edit_mode = default_sql_edit_mode(display_mode);
@@ -745,43 +631,23 @@ mod tests {
         let reedline_event = edit_mode.parse_event(event);
 
         // Then
-        assert_eq!(reedline_event, ReedlineEvent::SearchHistory);
+        assert_eq!(reedline_event, history_menu_event());
     }
 
     #[test]
-    fn vi_normal_prompt_history_search_accepts_text_input() {
+    fn vi_normal_prompt_ctrl_r_reaches_history_menu() {
         // Given
         let display_mode = DisplayModeState::new();
         let mut edit_mode =
             sql_edit_mode_with_remaps(ConfigEditMode::Vi, KeyRemaps::default(), display_mode);
         let _ = edit_mode.parse_event(raw_key_event(KeyCode::Esc, KeyModifiers::NONE));
-        let _ = edit_mode.parse_event(raw_key_event(KeyCode::Char('r'), KeyModifiers::CONTROL));
-
-        // When
-        let reedline_event = edit_mode.parse_event(raw_char_event('s'));
-
-        // Then
-        assert_eq!(
-            reedline_event,
-            ReedlineEvent::Edit(vec![EditCommand::InsertChar('s')])
-        );
-    }
-
-    #[test]
-    fn vi_normal_prompt_history_search_enter_accepts_match() {
-        // Given
-        let display_mode = DisplayModeState::new();
-        let mut edit_mode =
-            sql_edit_mode_with_remaps(ConfigEditMode::Vi, KeyRemaps::default(), display_mode);
-        let _ = edit_mode.parse_event(raw_key_event(KeyCode::Esc, KeyModifiers::NONE));
-        let _ = edit_mode.parse_event(raw_key_event(KeyCode::Char('r'), KeyModifiers::CONTROL));
-        let event = raw_key_event(KeyCode::Enter, KeyModifiers::NONE);
+        let event = raw_key_event(KeyCode::Char('r'), KeyModifiers::CONTROL);
 
         // When
         let reedline_event = edit_mode.parse_event(event);
 
         // Then
-        assert_eq!(reedline_event, ReedlineEvent::Enter);
+        assert_eq!(reedline_event, history_menu_event());
     }
 
     #[test]
@@ -977,7 +843,7 @@ mod tests {
     }
 
     #[test]
-    fn command_mode_ctrl_r_reaches_history_search() {
+    fn command_mode_ctrl_r_reaches_history_menu() {
         // Given
         let mut edit_mode = default_command_edit_mode();
         let event = raw_key_event(KeyCode::Char('r'), KeyModifiers::CONTROL);
@@ -986,54 +852,21 @@ mod tests {
         let reedline_event = edit_mode.parse_event(event);
 
         // Then
-        assert_eq!(reedline_event, ReedlineEvent::SearchHistory);
+        assert_eq!(reedline_event, history_menu_event());
     }
 
     #[test]
-    fn vi_normal_command_history_search_accepts_text_input() {
+    fn vi_normal_command_ctrl_r_reaches_history_menu() {
         // Given
         let mut edit_mode = command_edit_mode(ConfigEditMode::Vi);
         let _ = edit_mode.parse_event(raw_key_event(KeyCode::Esc, KeyModifiers::NONE));
-        let _ = edit_mode.parse_event(raw_key_event(KeyCode::Char('r'), KeyModifiers::CONTROL));
-
-        // When
-        let reedline_event = edit_mode.parse_event(raw_char_event('s'));
-
-        // Then
-        assert_eq!(
-            reedline_event,
-            ReedlineEvent::Edit(vec![EditCommand::InsertChar('s')])
-        );
-    }
-
-    #[test]
-    fn command_history_search_esc_exits_search_without_canceling_command_mode() {
-        // Given
-        let mut edit_mode = command_edit_mode(ConfigEditMode::Vi);
-        let _ = edit_mode.parse_event(raw_key_event(KeyCode::Esc, KeyModifiers::NONE));
-        let _ = edit_mode.parse_event(raw_key_event(KeyCode::Char('r'), KeyModifiers::CONTROL));
-        let event = raw_key_event(KeyCode::Esc, KeyModifiers::NONE);
+        let event = raw_key_event(KeyCode::Char('r'), KeyModifiers::CONTROL);
 
         // When
         let reedline_event = edit_mode.parse_event(event);
 
         // Then
-        assert_eq!(reedline_event, ReedlineEvent::Esc);
-    }
-
-    #[test]
-    fn vi_normal_command_history_search_enter_accepts_match() {
-        // Given
-        let mut edit_mode = command_edit_mode(ConfigEditMode::Vi);
-        let _ = edit_mode.parse_event(raw_key_event(KeyCode::Esc, KeyModifiers::NONE));
-        let _ = edit_mode.parse_event(raw_key_event(KeyCode::Char('r'), KeyModifiers::CONTROL));
-        let event = raw_key_event(KeyCode::Enter, KeyModifiers::NONE);
-
-        // When
-        let reedline_event = edit_mode.parse_event(event);
-
-        // Then
-        assert_eq!(reedline_event, ReedlineEvent::Enter);
+        assert_eq!(reedline_event, history_menu_event());
     }
 
     #[test]
