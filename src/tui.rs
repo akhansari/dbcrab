@@ -16,15 +16,19 @@ use ratatui::{
 };
 
 use crate::{
-    config::{TuiAction, TuiKeybindings},
+    config::{KeyRemaps, TuiAction, TuiKeybindings},
     render::{ResultGrid, format_json_value},
 };
 
 const TARGET_COLUMN_WIDTH: u16 = 24;
 
-pub fn show_result_grid(grid: &ResultGrid, keybindings: &TuiKeybindings) -> io::Result<()> {
+pub fn show_result_grid(
+    grid: &ResultGrid,
+    keybindings: &TuiKeybindings,
+    key_remaps: &KeyRemaps,
+) -> io::Result<()> {
     let mut session = TerminalSession::start()?;
-    let result = run_result_grid(&mut session.terminal, grid, keybindings);
+    let result = run_result_grid(&mut session.terminal, grid, keybindings, key_remaps);
     let restore_result = session.restore();
 
     match (result, restore_result) {
@@ -91,6 +95,7 @@ fn run_result_grid(
     terminal: &mut DefaultTerminal,
     grid: &ResultGrid,
     keybindings: &TuiKeybindings,
+    key_remaps: &KeyRemaps,
 ) -> io::Result<()> {
     let mut state = GridViewState::new();
     state.clamp_to_grid(grid);
@@ -106,7 +111,7 @@ fn run_result_grid(
             continue;
         }
 
-        if state.handle_key(key, grid, keybindings) {
+        if state.handle_key(key_remaps.remap_key_event(key), grid, keybindings) {
             break;
         }
     }

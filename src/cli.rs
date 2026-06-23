@@ -28,7 +28,7 @@ where
         .arg(
             Arg::new("default-keybindings")
                 .long("default-keybindings")
-                .help("Print the default [keybindings.tui] configuration and exit")
+                .help("Print the default keybinding configuration and exit")
                 .action(ArgAction::SetTrue),
         )
         .arg(

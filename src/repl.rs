@@ -11,23 +11,26 @@ use std::{
 
 use nu_ansi_term::{Color, Style as AnsiStyle};
 use reedline::{
-    ColumnarMenu, Completer, EditCommand, EditMode, Editor, Emacs, FileBackedHistory, History,
-    KeyCode, KeyModifiers, Menu, MenuBuilder, MenuEvent, MenuSettings, Painter, PromptEditMode,
-    Reedline, ReedlineEvent, ReedlineMenu, ReedlineRawEvent, Signal, Suggestion,
-    default_emacs_keybindings,
+    ColumnarMenu, Completer, CursorConfig, EditCommand, EditMode, Editor, Emacs, FileBackedHistory,
+    History, Menu, MenuBuilder, MenuEvent, MenuSettings, Painter, PromptEditMode, Reedline,
+    ReedlineEvent, ReedlineMenu, ReedlineRawEvent, Signal, Suggestion, Vi,
+    default_emacs_keybindings, default_vi_insert_keybindings, default_vi_normal_keybindings,
 };
 use sqlx::{AssertSqlSafe, PgPool};
 
 use crossterm::{
-    cursor,
-    event::{Event, KeyEvent},
+    cursor::{self, SetCursorStyle},
+    event::Event,
     execute,
 };
 
 use crate::{
     catalog::SharedCatalog,
     completion::{SharedCompletionLineSnapshot, SqlCompleter, shared_completion_line_snapshot},
-    config::TuiKeybindings,
+    config::{
+        CommandKeybindings, ConfigEditMode, KeyBinding, KeyRemaps, KeybindingsConfig,
+        TuiKeybindings,
+    },
     errors::{AppResult, format_query_error},
     highlight::SqlHighlighter,
     meta::{self, CommandCompleter, CommandHighlighter, CommandOutcome, CommandValidator},
@@ -143,7 +146,8 @@ impl<M: Menu> Menu for FullBufferCompletionMenu<M> {
 pub async fn run(
     pool: PgPool,
     catalog: SharedCatalog,
-    tui_keybindings: TuiKeybindings,
+    edit_mode: ConfigEditMode,
+    keybindings: KeybindingsConfig,
     history_context: Option<String>,
 ) -> AppResult<()> {
     let completion_line = shared_completion_line_snapshot();
@@ -154,7 +158,10 @@ pub async fn run(
     let display_mode = DisplayModeState::new();
     let command_mode_ready = Arc::new(AtomicBool::new(true));
     let edit_mode = Box::new(DbEditMode::new(
-        completion_keybindings(),
+        prompt_inner_edit_mode(edit_mode, &keybindings),
+        keybindings.remaps.clone(),
+        keybindings.prompt.cycle_display.clone(),
+        keybindings.prompt.command_mode.clone(),
         display_mode.clone(),
         command_mode_ready.clone(),
     ));
@@ -175,10 +182,15 @@ pub async fn run(
         .with_history_exclusion_prefix(Some(HISTORY_EXCLUSION_PREFIX.to_owned()))
         .with_quick_completions(true)
         .with_partial_completions(true)
+        .with_cursor_config(CursorConfig {
+            vi_insert: Some(SetCursorStyle::SteadyBar),
+            vi_normal: Some(SetCursorStyle::SteadyBlock),
+            emacs: None,
+        })
         .use_bracketed_paste(true);
 
     let prompt = DbPrompt::new(display_mode.clone());
-    let mut command_editor = command_editor(catalog.clone())?;
+    let mut command_editor = command_editor(catalog.clone(), &keybindings)?;
     let command_prompt = CommandPrompt;
 
     loop {
@@ -197,7 +209,8 @@ pub async fn run(
                         &pool,
                         &catalog,
                         &statement,
-                        &tui_keybindings,
+                        &keybindings.tui,
+                        &keybindings.remaps,
                         display_mode.get(),
                     )
                     .await?;
@@ -216,7 +229,8 @@ pub async fn run(
                     &command_prompt,
                     &pool,
                     &catalog,
-                    &tui_keybindings,
+                    &keybindings.tui,
+                    &keybindings.remaps,
                 )
                 .await?
                 {
@@ -229,7 +243,7 @@ pub async fn run(
     }
 }
 
-fn command_editor(catalog: SharedCatalog) -> AppResult<Reedline> {
+fn command_editor(catalog: SharedCatalog, keybindings: &KeybindingsConfig) -> AppResult<Reedline> {
     let completion_menu = Box::new(ColumnarMenu::default().with_name(COMMAND_COMPLETION_MENU));
     let history = Box::new(FileBackedHistory::new(HISTORY_LIMIT)?);
 
@@ -238,7 +252,9 @@ fn command_editor(catalog: SharedCatalog) -> AppResult<Reedline> {
         .with_completer(Box::new(CommandCompleter::new(catalog)))
         .with_menu(ReedlineMenu::EngineCompleter(completion_menu))
         .with_edit_mode(Box::new(CommandEditMode::new(
-            command_completion_keybindings(),
+            command_keybindings(keybindings),
+            keybindings.command.clone(),
+            keybindings.remaps.clone(),
         )))
         .with_highlighter(Box::new(CommandHighlighter))
         .with_validator(Box::new(CommandValidator))
@@ -253,6 +269,7 @@ async fn run_command_mode(
     pool: &PgPool,
     catalog: &SharedCatalog,
     tui_keybindings: &TuiKeybindings,
+    key_remaps: &KeyRemaps,
 ) -> AppResult<bool> {
     move_to_current_prompt_line_start()?;
 
@@ -263,7 +280,7 @@ async fn run_command_mode(
                 Ok(CommandOutcome::None) => {}
                 Ok(CommandOutcome::Exit) => return Ok(true),
                 Ok(CommandOutcome::Output(output)) => {
-                    render_meta_output(output, tui_keybindings, DisplayMode::Auto)?;
+                    render_meta_output(output, tui_keybindings, key_remaps, DisplayMode::Auto)?;
                 }
                 Err(err) => eprintln!("{err}"),
             },
@@ -289,10 +306,11 @@ fn move_to_current_prompt_line_start() -> io::Result<()> {
 fn render_meta_output(
     output: meta::MetaOutput,
     tui_keybindings: &TuiKeybindings,
+    key_remaps: &KeyRemaps,
     display_mode: DisplayMode,
 ) -> AppResult<()> {
     if let [section] = output.sections.as_slice() {
-        render_meta_section(section, tui_keybindings, display_mode)?;
+        render_meta_section(section, tui_keybindings, key_remaps, display_mode)?;
         return Ok(());
     }
 
@@ -318,12 +336,13 @@ fn render_section_title(title: &str) -> String {
 fn render_meta_section(
     section: &meta::MetaSection,
     tui_keybindings: &TuiKeybindings,
+    key_remaps: &KeyRemaps,
     display_mode: DisplayMode,
 ) -> AppResult<()> {
     match grid_rows_display(section.grid.clone(), display_mode) {
         RowsDisplay::Inline(output) => println!("{output}"),
         RowsDisplay::Tui(grid) => {
-            show_result_grid(&grid, tui_keybindings)?;
+            show_result_grid(&grid, tui_keybindings, key_remaps)?;
             println!("{}", render_row_count(grid.row_count()));
         }
     }
@@ -423,20 +442,50 @@ fn sanitize_history_context(context: &str) -> String {
 }
 
 struct DbEditMode {
-    inner: Emacs,
+    inner: PromptInnerEditMode,
+    key_remaps: KeyRemaps,
+    cycle_display: Vec<KeyBinding>,
+    command_mode: Vec<KeyBinding>,
     display_mode: DisplayModeState,
     command_mode_ready: Arc<AtomicBool>,
     tracked_sql_input: TrackedSqlInput,
 }
 
+enum PromptInnerEditMode {
+    Emacs(Emacs),
+    Vi(Vi),
+}
+
+impl PromptInnerEditMode {
+    fn parse_event(&mut self, event: ReedlineRawEvent) -> ReedlineEvent {
+        match self {
+            Self::Emacs(edit_mode) => edit_mode.parse_event(event),
+            Self::Vi(edit_mode) => edit_mode.parse_event(event),
+        }
+    }
+
+    fn edit_mode(&self) -> PromptEditMode {
+        match self {
+            Self::Emacs(edit_mode) => edit_mode.edit_mode(),
+            Self::Vi(edit_mode) => edit_mode.edit_mode(),
+        }
+    }
+}
+
 impl DbEditMode {
     fn new(
-        keybindings: reedline::Keybindings,
+        inner: PromptInnerEditMode,
+        key_remaps: KeyRemaps,
+        cycle_display: Vec<KeyBinding>,
+        command_mode: Vec<KeyBinding>,
         display_mode: DisplayModeState,
         command_mode_ready: Arc<AtomicBool>,
     ) -> Self {
         Self {
-            inner: Emacs::new(keybindings),
+            inner,
+            key_remaps,
+            cycle_display,
+            command_mode,
             display_mode,
             command_mode_ready,
             tracked_sql_input: TrackedSqlInput::default(),
@@ -446,16 +495,18 @@ impl DbEditMode {
 
 impl EditMode for DbEditMode {
     fn parse_event(&mut self, event: ReedlineRawEvent) -> ReedlineEvent {
-        let event = Event::from(event);
+        let event = self.key_remaps.remap_event(Event::from(event));
         if self.command_mode_ready.load(Ordering::Relaxed) {
             self.tracked_sql_input.reset();
         }
-        if is_command_mode_trigger(&event, &self.command_mode_ready) {
+        if is_keybinding_event(&event, &self.command_mode)
+            && self.command_mode_ready.load(Ordering::Relaxed)
+        {
             self.command_mode_ready.store(false, Ordering::Relaxed);
             return ReedlineEvent::ExecuteHostCommand(COMMAND_MODE_HOST_COMMAND.to_owned());
         }
 
-        if is_display_mode_toggle_event(&event) {
+        if is_keybinding_event(&event, &self.cycle_display) {
             self.display_mode.cycle();
             return ReedlineEvent::Repaint;
         }
@@ -560,20 +611,28 @@ impl TrackedSqlInput {
 
 struct CommandEditMode {
     inner: Emacs,
+    cancel: Vec<KeyBinding>,
+    key_remaps: KeyRemaps,
 }
 
 impl CommandEditMode {
-    fn new(keybindings: reedline::Keybindings) -> Self {
+    fn new(
+        keybindings: reedline::Keybindings,
+        keybindings_config: CommandKeybindings,
+        key_remaps: KeyRemaps,
+    ) -> Self {
         Self {
             inner: Emacs::new(keybindings),
+            cancel: keybindings_config.cancel,
+            key_remaps,
         }
     }
 }
 
 impl EditMode for CommandEditMode {
     fn parse_event(&mut self, event: ReedlineRawEvent) -> ReedlineEvent {
-        let event = Event::from(event);
-        if is_command_cancel_event(&event) {
+        let event = self.key_remaps.remap_event(Event::from(event));
+        if is_keybinding_event(&event, &self.cancel) {
             return ReedlineEvent::ExecuteHostCommand(COMMAND_CANCEL_HOST_COMMAND.to_owned());
         }
 
@@ -587,52 +646,8 @@ impl EditMode for CommandEditMode {
     }
 }
 
-fn is_command_mode_trigger(event: &Event, command_mode_ready: &AtomicBool) -> bool {
-    matches!(
-        event,
-        Event::Key(KeyEvent {
-            code: KeyCode::Char(':'),
-            modifiers,
-            ..
-        }) if command_mode_ready.load(Ordering::Relaxed)
-            && (modifiers.is_empty() || *modifiers == KeyModifiers::SHIFT)
-    )
-}
-
-fn is_command_cancel_event(event: &Event) -> bool {
-    is_command_escape_event(event) || is_command_ctrl_d_event(event)
-}
-
-fn is_command_ctrl_d_event(event: &Event) -> bool {
-    matches!(
-        event,
-        Event::Key(KeyEvent {
-            code: KeyCode::Char('d'),
-            modifiers,
-            ..
-        }) if modifiers.contains(KeyModifiers::CONTROL)
-    )
-}
-
-fn is_command_escape_event(event: &Event) -> bool {
-    matches!(
-        event,
-        Event::Key(KeyEvent {
-            code: KeyCode::Esc,
-            ..
-        })
-    )
-}
-
-fn is_display_mode_toggle_event(event: &Event) -> bool {
-    matches!(
-        event,
-        Event::Key(KeyEvent {
-            code: KeyCode::Char(ch),
-            modifiers: KeyModifiers::ALT,
-            ..
-        }) if ch.eq_ignore_ascii_case(&'v')
-    )
+fn is_keybinding_event(event: &Event, bindings: &[KeyBinding]) -> bool {
+    matches!(event, Event::Key(key) if bindings.iter().any(|binding| binding.matches(*key)))
 }
 
 async fn execute_statement(
@@ -640,6 +655,7 @@ async fn execute_statement(
     catalog: &SharedCatalog,
     statement: &str,
     tui_keybindings: &TuiKeybindings,
+    key_remaps: &KeyRemaps,
     display_mode: DisplayMode,
 ) -> AppResult<()> {
     if statement.trim().is_empty() {
@@ -654,7 +670,7 @@ async fn execute_statement(
             Ok(rows) => match statement_rows_display(&rows, display_mode) {
                 RowsDisplay::Inline(output) => println!("{output}"),
                 RowsDisplay::Tui(grid) => {
-                    show_result_grid(&grid, tui_keybindings)?;
+                    show_result_grid(&grid, tui_keybindings, key_remaps)?;
                     println!("{}", render_row_count(grid.row_count()));
                 }
             },
@@ -698,22 +714,65 @@ fn statement_rows_display(
     }
 }
 
-fn completion_keybindings() -> reedline::Keybindings {
-    completion_keybindings_for(COMPLETION_MENU)
+fn prompt_inner_edit_mode(
+    edit_mode: ConfigEditMode,
+    keybindings: &KeybindingsConfig,
+) -> PromptInnerEditMode {
+    match edit_mode {
+        ConfigEditMode::Emacs => {
+            PromptInnerEditMode::Emacs(Emacs::new(prompt_emacs_keybindings(keybindings)))
+        }
+        ConfigEditMode::Vi => {
+            let (insert, normal) = prompt_vi_keybindings(keybindings);
+            PromptInnerEditMode::Vi(Vi::new(insert, normal))
+        }
+    }
 }
 
-fn command_completion_keybindings() -> reedline::Keybindings {
-    completion_keybindings_for(COMMAND_COMPLETION_MENU)
-}
-
-fn completion_keybindings_for(menu_name: &str) -> reedline::Keybindings {
+fn prompt_emacs_keybindings(config: &KeybindingsConfig) -> reedline::Keybindings {
     let mut keybindings = default_emacs_keybindings();
-    let completion_event = completion_event(menu_name);
-
-    keybindings.add_binding(KeyModifiers::NONE, KeyCode::Tab, completion_event.clone());
-    keybindings.add_binding(KeyModifiers::CONTROL, KeyCode::Char(' '), completion_event);
+    config.prompt.insert.apply_to(&mut keybindings);
+    config.prompt.emacs.apply_to(&mut keybindings);
+    add_completion_keybindings(&mut keybindings, &config.prompt.complete, COMPLETION_MENU);
 
     keybindings
+}
+
+fn prompt_vi_keybindings(
+    config: &KeybindingsConfig,
+) -> (reedline::Keybindings, reedline::Keybindings) {
+    let mut insert = default_vi_insert_keybindings();
+    config.prompt.insert.apply_to(&mut insert);
+    config.prompt.vi_insert.apply_to(&mut insert);
+    add_completion_keybindings(&mut insert, &config.prompt.complete, COMPLETION_MENU);
+
+    let mut normal = default_vi_normal_keybindings();
+    config.prompt.vi_normal.apply_to(&mut normal);
+
+    (insert, normal)
+}
+
+fn command_keybindings(keybindings: &KeybindingsConfig) -> reedline::Keybindings {
+    let mut editor_keybindings = default_emacs_keybindings();
+    keybindings.command.editor.apply_to(&mut editor_keybindings);
+    add_completion_keybindings(
+        &mut editor_keybindings,
+        &keybindings.command.complete,
+        COMMAND_COMPLETION_MENU,
+    );
+
+    editor_keybindings
+}
+
+fn add_completion_keybindings(
+    keybindings: &mut reedline::Keybindings,
+    bindings: &[KeyBinding],
+    menu_name: &str,
+) {
+    let completion_event = completion_event(menu_name);
+    for binding in bindings {
+        keybindings.add_binding(binding.modifiers, binding.code, completion_event.clone());
+    }
 }
 
 fn completion_event(menu_name: &str) -> ReedlineEvent {
@@ -726,7 +785,9 @@ fn completion_event(menu_name: &str) -> ReedlineEvent {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crossterm::event::KeyEvent;
     use reedline::{HistoryItem, SearchDirection, SearchQuery};
+    use reedline::{KeyCode, KeyModifiers};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
@@ -878,6 +939,31 @@ mod tests {
         ))
     }
 
+    fn completion_keybindings() -> reedline::Keybindings {
+        prompt_emacs_keybindings(&KeybindingsConfig::default())
+    }
+
+    fn default_db_edit_mode(display_mode: DisplayModeState) -> DbEditMode {
+        let keybindings = KeybindingsConfig::default();
+        DbEditMode::new(
+            prompt_inner_edit_mode(ConfigEditMode::Emacs, &keybindings),
+            keybindings.remaps,
+            keybindings.prompt.cycle_display,
+            keybindings.prompt.command_mode,
+            display_mode,
+            Arc::new(AtomicBool::new(true)),
+        )
+    }
+
+    fn default_command_edit_mode() -> CommandEditMode {
+        let keybindings = KeybindingsConfig::default();
+        CommandEditMode::new(
+            command_keybindings(&keybindings),
+            keybindings.command,
+            keybindings.remaps,
+        )
+    }
+
     #[test]
     fn tab_opens_completion_menu() {
         // Given
@@ -906,11 +992,7 @@ mod tests {
     fn alt_v_toggles_display_mode_in_place() {
         // Given
         let display_mode = DisplayModeState::new();
-        let mut edit_mode = DbEditMode::new(
-            completion_keybindings(),
-            display_mode.clone(),
-            Arc::new(AtomicBool::new(true)),
-        );
+        let mut edit_mode = default_db_edit_mode(display_mode.clone());
         let event = ReedlineRawEvent::try_from(Event::Key(KeyEvent::new(
             KeyCode::Char('v'),
             KeyModifiers::ALT,
@@ -929,11 +1011,7 @@ mod tests {
     fn first_colon_enters_command_mode() {
         // Given
         let display_mode = DisplayModeState::new();
-        let mut edit_mode = DbEditMode::new(
-            completion_keybindings(),
-            display_mode,
-            Arc::new(AtomicBool::new(true)),
-        );
+        let mut edit_mode = default_db_edit_mode(display_mode);
         let event = ReedlineRawEvent::try_from(Event::Key(KeyEvent::new(
             KeyCode::Char(':'),
             KeyModifiers::SHIFT,
@@ -954,11 +1032,7 @@ mod tests {
     fn colon_after_sql_text_stays_in_sql_mode() {
         // Given
         let display_mode = DisplayModeState::new();
-        let mut edit_mode = DbEditMode::new(
-            completion_keybindings(),
-            display_mode,
-            Arc::new(AtomicBool::new(true)),
-        );
+        let mut edit_mode = default_db_edit_mode(display_mode);
 
         // When
         let _ = edit_mode.parse_event(raw_char_event('s'));
@@ -975,11 +1049,7 @@ mod tests {
     fn colon_enters_command_mode_after_erasing_sql_text() {
         // Given
         let display_mode = DisplayModeState::new();
-        let mut edit_mode = DbEditMode::new(
-            completion_keybindings(),
-            display_mode,
-            Arc::new(AtomicBool::new(true)),
-        );
+        let mut edit_mode = default_db_edit_mode(display_mode);
 
         // When
         for ch in "select *".chars() {
@@ -1001,11 +1071,7 @@ mod tests {
     fn ctrl_l_does_not_block_command_mode_trigger() {
         // Given
         let display_mode = DisplayModeState::new();
-        let mut edit_mode = DbEditMode::new(
-            completion_keybindings(),
-            display_mode,
-            Arc::new(AtomicBool::new(true)),
-        );
+        let mut edit_mode = default_db_edit_mode(display_mode);
         let clear = ReedlineRawEvent::try_from(Event::Key(KeyEvent::new(
             KeyCode::Char('l'),
             KeyModifiers::CONTROL,
@@ -1048,7 +1114,7 @@ mod tests {
     #[test]
     fn command_mode_esc_cancels_command_mode() {
         // Given
-        let mut edit_mode = CommandEditMode::new(command_completion_keybindings());
+        let mut edit_mode = default_command_edit_mode();
         let event =
             ReedlineRawEvent::try_from(Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)))
                 .expect("key event should be valid");
@@ -1066,7 +1132,7 @@ mod tests {
     #[test]
     fn command_mode_ctrl_d_cancels_command_mode() {
         // Given
-        let mut edit_mode = CommandEditMode::new(command_completion_keybindings());
+        let mut edit_mode = default_command_edit_mode();
         let event = raw_key_event(KeyCode::Char('d'), KeyModifiers::CONTROL);
 
         // When
@@ -1082,7 +1148,7 @@ mod tests {
     #[test]
     fn command_mode_ctrl_c_does_not_cancel_command_mode() {
         // Given
-        let mut edit_mode = CommandEditMode::new(command_completion_keybindings());
+        let mut edit_mode = default_command_edit_mode();
         let event = raw_key_event(KeyCode::Char('c'), KeyModifiers::CONTROL);
 
         // When

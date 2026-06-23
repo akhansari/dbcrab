@@ -102,5 +102,58 @@ dbcrab postgres://user@localhost/app -c my_app
 ### Configuration
 
 DBCrab reads configuration from `dbcrab/config.toml` in your user configuration
-directory. You can customize table viewer keybindings in the `[keybindings.tui]`
-section.
+directory. Use `--config PATH` to load a specific file.
+
+Print the default keybinding configuration with:
+
+```bash
+dbcrab --default-keybindings
+```
+
+Choose the prompt editing mode with:
+
+```toml
+edit_mode = "emacs" # or "vi"
+```
+
+Keybindings are merged with DBCrab and Reedline defaults. A plain assignment
+replaces an action's bindings, while `.add`, `.remove`, and `.set` patch the
+existing defaults.
+
+```toml
+[keybindings.remap]
+# Remaps raw input before prompt, command, TUI, and Reedline Vi grammar handling.
+j.swap = "n"
+# Explicit modified remaps are opt-in.
+ctrl-h.swap = "ctrl-i"
+
+[keybindings.prompt]
+complete.add = ["ctrl-y"]
+complete.remove = ["ctrl-space"]
+cycle_display = ["alt-v"]
+command_mode = [":"]
+
+[keybindings.prompt.insert]
+ClearScreen = ["ctrl-l"]
+SearchHistory = ["ctrl-r"]
+
+[keybindings.prompt.vi_normal]
+# Reedline's built-in vi grammar still handles h/j/k/l, w, b, d, c, y, etc.
+
+[keybindings.command]
+complete = ["tab", "ctrl-space"]
+cancel = ["esc", "ctrl-d"]
+
+[keybindings.tui]
+left = ["left", "h"]
+up = ["up", "k"]
+right = ["right", "l"]
+down = ["down", "j"]
+quit.add = ["q"]
+```
+
+Prompt line-editor sections use Reedline action names such as `ClearScreen`,
+`MoveToLineStart`, `BackspaceWord`, `Undo`, and `PasteCutBufferBefore`.
+Plain character remaps also apply to shifted input, so `h.swap = "i"` maps
+`h <-> i` and `H <-> I`. Modified keys such as `ctrl-h` are only remapped when
+listed explicitly.

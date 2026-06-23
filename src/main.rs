@@ -47,5 +47,12 @@ async fn run() -> AppResult<()> {
     println!("Loaded {}.", catalog.summary());
     let catalog = catalog::shared_catalog(catalog);
 
-    repl::run(pool, catalog, config.keybindings.tui, args.history_context).await
+    repl::run(
+        pool,
+        catalog,
+        config.edit_mode,
+        config.keybindings,
+        args.history_context,
+    )
+    .await
 }

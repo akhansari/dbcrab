@@ -1,10 +1,87 @@
 use std::{env, fmt, fs, path::PathBuf};
 
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+use reedline::{EditCommand, ReedlineEvent};
 
 use crate::errors::{AppError, AppResult};
 
-pub const DEFAULT_KEYBINDINGS_TOML: &str = r#"[keybindings.tui]
+pub const DEFAULT_KEYBINDINGS_TOML: &str = r#"# emacs | vi
+edit_mode = "emacs"
+
+[keybindings.prompt]
+complete = ["tab", "ctrl-space"]
+cycle_display = ["alt-v"]
+command_mode = [":"]
+
+[keybindings.remap]
+# h.swap = "i"
+
+[keybindings.prompt.insert]
+Esc = ["esc"]
+CtrlC = ["ctrl-c"]
+CtrlD = ["ctrl-d"]
+ClearScreen = ["ctrl-l"]
+SearchHistory = ["ctrl-r"]
+OpenEditor = ["ctrl-o"]
+
+Enter = ["enter", "ctrl-j"]
+InsertNewline = ["alt-enter", "shift-enter"]
+
+MoveWordLeft = ["ctrl-left"]
+MoveWordRight = ["ctrl-right"]
+MoveToLineStart = ["home", "ctrl-a"]
+MoveToLineEnd = ["end", "ctrl-e"]
+MoveToStart = ["ctrl-home"]
+MoveToEnd = ["ctrl-end"]
+ToStart = ["alt-<", "shift-alt-,"]
+ToEnd = ["alt->", "shift-alt-."]
+
+Backspace = ["backspace", "ctrl-h"]
+Delete = ["delete"]
+BackspaceWord = ["ctrl-backspace", "ctrl-w"]
+DeleteWord = ["ctrl-delete"]
+
+MoveLineUpSelect = ["shift-up"]
+MoveLineDownSelect = ["shift-down"]
+MoveLeftSelect = ["shift-left"]
+MoveRightSelect = ["shift-right"]
+MoveWordLeftSelect = ["shift-ctrl-left"]
+MoveWordRightSelect = ["shift-ctrl-right"]
+MoveToLineStartSelect = ["shift-home"]
+MoveToLineEndSelect = ["shift-end"]
+MoveToStartSelect = ["shift-ctrl-home"]
+MoveToEndSelect = ["shift-ctrl-end"]
+SelectAll = ["shift-ctrl-a"]
+
+[keybindings.prompt.emacs]
+MoveWordLeft.add = ["alt-left", "alt-b"]
+MoveWordRight.add = ["alt-right", "alt-f"]
+BackspaceWord.add = ["alt-backspace", "alt-m"]
+DeleteWord.add = ["alt-delete"]
+
+Redo = ["ctrl-g"]
+Undo = ["ctrl-z"]
+PasteCutBufferBefore = ["ctrl-y"]
+CutWordLeft = ["ctrl-w"]
+KillLine = ["ctrl-k"]
+CutFromStart = ["ctrl-u"]
+CutWordRight = ["alt-d"]
+SwapGraphemes = ["ctrl-t"]
+UppercaseWord = ["alt-u"]
+LowercaseWord = ["alt-l"]
+CapitalizeChar = ["alt-c"]
+
+[keybindings.prompt.vi_insert]
+# Inherits keybindings.prompt.insert.
+
+[keybindings.prompt.vi_normal]
+# Reedline's built-in vi grammar handles h/j/k/l, w, b, d, c, y, etc.
+
+[keybindings.command]
+complete = ["tab", "ctrl-space"]
+cancel = ["esc", "ctrl-d"]
+
+[keybindings.tui]
 left = ["left", "h"]
 up = ["up", "k"]
 right = ["right", "l"]
@@ -28,12 +105,145 @@ quit = ["q", "esc", "ctrl-c"]
 
 #[derive(Debug, Clone, Eq, PartialEq, Default)]
 pub struct AppConfig {
+    pub edit_mode: ConfigEditMode,
     pub keybindings: KeybindingsConfig,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Default)]
 pub struct KeybindingsConfig {
+    pub remaps: KeyRemaps,
+    pub prompt: PromptKeybindings,
+    pub command: CommandKeybindings,
     pub tui: TuiKeybindings,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Default)]
+pub struct KeyRemaps {
+    remaps: Vec<KeyRemap>,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+struct KeyRemap {
+    from: KeyBinding,
+    to: KeyBinding,
+}
+
+impl KeyRemaps {
+    fn set(&mut self, from: KeyBinding, to: KeyBinding) {
+        self.remaps.retain(|remap| remap.from != from);
+        self.remaps.push(KeyRemap { from, to });
+    }
+
+    pub fn remap_event(&self, event: Event) -> Event {
+        match event {
+            Event::Key(key) => Event::Key(self.remap_key_event(key)),
+            event => event,
+        }
+    }
+
+    pub fn remap_key_event(&self, key: KeyEvent) -> KeyEvent {
+        if let Some(remap) = self
+            .remaps
+            .iter()
+            .find(|remap| !remap.from.is_plain_char() && remap.from.matches(key))
+        {
+            return key_event_with_binding(key, remap.to);
+        }
+
+        if let Some(remap) = self.remaps.iter().find(|remap| remap.from.matches(key)) {
+            return key_event_with_binding(key, remap.to);
+        }
+
+        self.remap_shifted_plain_char(key).unwrap_or(key)
+    }
+
+    fn remap_shifted_plain_char(&self, key: KeyEvent) -> Option<KeyEvent> {
+        let KeyCode::Char(ch) = key.code else {
+            return None;
+        };
+        let mut modifiers = key.modifiers;
+        modifiers.remove(KeyModifiers::SHIFT);
+        if !modifiers.is_empty() {
+            return None;
+        }
+
+        let shifted = key.modifiers.contains(KeyModifiers::SHIFT) || ch.is_ascii_uppercase();
+        let ch = ch.to_ascii_lowercase();
+        let remap = self.remaps.iter().find(|remap| {
+            matches!(remap.from.code, KeyCode::Char(from) if remap.from.modifiers.is_empty() && from == ch)
+        })?;
+
+        Some(match remap.to.code {
+            KeyCode::Char(target) if remap.to.modifiers.is_empty() && shifted => {
+                let mut remapped = key_event_with_binding(key, remap.to);
+                remapped.code = KeyCode::Char(target.to_ascii_lowercase());
+                remapped.modifiers.insert(KeyModifiers::SHIFT);
+                remapped
+            }
+            _ => key_event_with_binding(key, remap.to),
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Default)]
+pub enum ConfigEditMode {
+    #[default]
+    Emacs,
+    Vi,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Default)]
+pub struct LineEditorKeybindings {
+    updates: Vec<LineEditorKeybindingUpdate>,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+struct LineEditorKeybindingUpdate {
+    action: LineEditorAction,
+    operation: KeyBindingOperation,
+    bindings: Vec<KeyBinding>,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct PromptKeybindings {
+    pub complete: Vec<KeyBinding>,
+    pub cycle_display: Vec<KeyBinding>,
+    pub command_mode: Vec<KeyBinding>,
+    pub insert: LineEditorKeybindings,
+    pub emacs: LineEditorKeybindings,
+    pub vi_insert: LineEditorKeybindings,
+    pub vi_normal: LineEditorKeybindings,
+}
+
+impl Default for PromptKeybindings {
+    fn default() -> Self {
+        Self {
+            complete: key_bindings(["tab", "ctrl-space"]),
+            cycle_display: key_bindings(["alt-v"]),
+            command_mode: key_bindings([":"]),
+            insert: LineEditorKeybindings::default(),
+            emacs: LineEditorKeybindings::default(),
+            vi_insert: LineEditorKeybindings::default(),
+            vi_normal: LineEditorKeybindings::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct CommandKeybindings {
+    pub complete: Vec<KeyBinding>,
+    pub cancel: Vec<KeyBinding>,
+    pub editor: LineEditorKeybindings,
+}
+
+impl Default for CommandKeybindings {
+    fn default() -> Self {
+        Self {
+            complete: key_bindings(["tab", "ctrl-space"]),
+            cancel: key_bindings(["esc", "ctrl-d"]),
+            editor: LineEditorKeybindings::default(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -126,6 +336,27 @@ impl TuiKeybindings {
         }
     }
 
+    fn apply_update(
+        &mut self,
+        action: TuiAction,
+        operation: KeyBindingOperation,
+        bindings: Vec<KeyBinding>,
+    ) {
+        match operation {
+            KeyBindingOperation::Set => self.set_bindings(action, dedup_bindings(bindings)),
+            KeyBindingOperation::Add => {
+                let mut updated = self.bindings_for(action).to_vec();
+                add_bindings(&mut updated, bindings);
+                self.set_bindings(action, updated);
+            }
+            KeyBindingOperation::Remove => {
+                let mut updated = self.bindings_for(action).to_vec();
+                remove_bindings(&mut updated, &bindings);
+                self.set_bindings(action, updated);
+            }
+        }
+    }
+
     fn validate(&self) -> Result<(), String> {
         if self.quit.is_empty() {
             return Err("`quit` must have at least one key binding".to_owned());
@@ -149,6 +380,41 @@ impl TuiKeybindings {
         }
 
         Ok(())
+    }
+}
+
+impl LineEditorKeybindings {
+    fn push_update(
+        &mut self,
+        action: LineEditorAction,
+        operation: KeyBindingOperation,
+        bindings: Vec<KeyBinding>,
+    ) {
+        self.updates.push(LineEditorKeybindingUpdate {
+            action,
+            operation,
+            bindings: dedup_bindings(bindings),
+        });
+    }
+
+    pub fn apply_to(&self, keybindings: &mut reedline::Keybindings) {
+        for update in &self.updates {
+            let event = update.action.event();
+            match update.operation {
+                KeyBindingOperation::Set => {
+                    remove_event_bindings(keybindings, &event);
+                    add_event_bindings(keybindings, &update.bindings, event);
+                }
+                KeyBindingOperation::Add => {
+                    add_event_bindings(keybindings, &update.bindings, event)
+                }
+                KeyBindingOperation::Remove => {
+                    for binding in &update.bindings {
+                        keybindings.remove_binding(binding.modifiers, binding.code);
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -212,13 +478,17 @@ impl TuiAction {
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
-struct KeyBinding {
-    code: KeyCode,
-    modifiers: KeyModifiers,
+pub struct KeyBinding {
+    pub(crate) code: KeyCode,
+    pub(crate) modifiers: KeyModifiers,
 }
 
 impl KeyBinding {
-    fn matches(self, key: KeyEvent) -> bool {
+    fn is_plain_char(self) -> bool {
+        matches!(self.code, KeyCode::Char(_)) && self.modifiers.is_empty()
+    }
+
+    pub fn matches(self, key: KeyEvent) -> bool {
         match (self.code, key.code) {
             (KeyCode::Char(expected), KeyCode::Char(actual)) => {
                 modifiers_without_shift(self.modifiers) == modifiers_without_shift(key.modifiers)
@@ -227,10 +497,251 @@ impl KeyBinding {
                             && (key.modifiers.contains(KeyModifiers::SHIFT)
                                 || actual.is_ascii_uppercase())
                     } else {
-                        actual == expected && !key.modifiers.contains(KeyModifiers::SHIFT)
+                        actual == expected
+                            && (!key.modifiers.contains(KeyModifiers::SHIFT)
+                                || !expected.is_ascii_alphabetic())
                     }
             }
             _ => self.code == key.code && self.modifiers == key.modifiers,
+        }
+    }
+}
+
+fn key_event_with_binding(mut key: KeyEvent, binding: KeyBinding) -> KeyEvent {
+    key.code = binding.code;
+    key.modifiers = binding.modifiers;
+    key
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+enum KeyBindingOperation {
+    Set,
+    Add,
+    Remove,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+enum KeyRemapOperation {
+    Set,
+    Swap,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+enum ConfigSection {
+    Root,
+    Remap,
+    Prompt,
+    PromptInsert,
+    PromptEmacs,
+    PromptViInsert,
+    PromptViNormal,
+    Command,
+    Tui,
+    Ignored,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+enum PromptAction {
+    Complete,
+    CycleDisplay,
+    CommandMode,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+enum CommandAction {
+    Complete,
+    Cancel,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+enum LineEditorAction {
+    Esc,
+    CtrlC,
+    CtrlD,
+    ClearScreen,
+    SearchHistory,
+    OpenEditor,
+    Enter,
+    InsertNewline,
+    Up,
+    Down,
+    Left,
+    Right,
+    ToStart,
+    ToEnd,
+    MoveToStart,
+    MoveToLineStart,
+    MoveToLineNonBlankStart,
+    MoveToEnd,
+    MoveToLineEnd,
+    MoveLineUp,
+    MoveLineDown,
+    MoveLeft,
+    MoveRight,
+    MoveWordLeft,
+    MoveWordRight,
+    MoveBigWordLeft,
+    MoveBigWordRight,
+    MoveWordRightStart,
+    MoveWordRightEnd,
+    MoveBigWordRightStart,
+    MoveBigWordRightEnd,
+    Backspace,
+    Delete,
+    BackspaceWord,
+    DeleteWord,
+    CutChar,
+    Clear,
+    ClearToLineEnd,
+    CutCurrentLine,
+    CutFromStart,
+    CutFromLineStart,
+    CutFromLineNonBlankStart,
+    CutToEnd,
+    CutToLineEnd,
+    KillLine,
+    CutWordLeft,
+    CutWordRight,
+    CutBigWordLeft,
+    CutBigWordRight,
+    PasteCutBufferBefore,
+    PasteCutBufferAfter,
+    Paste,
+    Undo,
+    Redo,
+    UppercaseWord,
+    LowercaseWord,
+    CapitalizeChar,
+    SwitchcaseChar,
+    SwapWords,
+    SwapGraphemes,
+    SelectAll,
+    CopySelection,
+    CutSelection,
+    CopyFromStart,
+    CopyFromLineStart,
+    CopyFromLineNonBlankStart,
+    CopyToEnd,
+    CopyToLineEnd,
+    CopyCurrentLine,
+    CopyWordLeft,
+    CopyWordRight,
+    CopyBigWordLeft,
+    CopyBigWordRight,
+    MoveLineUpSelect,
+    MoveLineDownSelect,
+    MoveLeftSelect,
+    MoveRightSelect,
+    MoveWordLeftSelect,
+    MoveWordRightSelect,
+    MoveToLineStartSelect,
+    MoveToLineEndSelect,
+    MoveToStartSelect,
+    MoveToEndSelect,
+}
+
+impl LineEditorAction {
+    fn event(self) -> ReedlineEvent {
+        use EditCommand as EC;
+        use LineEditorAction as Action;
+        use ReedlineEvent as RE;
+
+        fn edit(command: EditCommand) -> ReedlineEvent {
+            ReedlineEvent::Edit(vec![command])
+        }
+
+        match self {
+            Action::Esc => RE::Esc,
+            Action::CtrlC => RE::CtrlC,
+            Action::CtrlD => RE::CtrlD,
+            Action::ClearScreen => RE::ClearScreen,
+            Action::SearchHistory => RE::SearchHistory,
+            Action::OpenEditor => RE::OpenEditor,
+            Action::Enter => RE::Enter,
+            Action::InsertNewline => edit(EC::InsertNewline),
+            Action::Up => RE::UntilFound(vec![RE::MenuUp, RE::Up]),
+            Action::Down => RE::UntilFound(vec![RE::MenuDown, RE::Down]),
+            Action::Left => RE::UntilFound(vec![RE::MenuLeft, RE::Left]),
+            Action::Right => {
+                RE::UntilFound(vec![RE::HistoryHintComplete, RE::MenuRight, RE::Right])
+            }
+            Action::ToStart => RE::ToStart,
+            Action::ToEnd => RE::ToEnd,
+            Action::MoveToStart => edit(EC::MoveToStart { select: false }),
+            Action::MoveToLineStart => edit(EC::MoveToLineStart { select: false }),
+            Action::MoveToLineNonBlankStart => edit(EC::MoveToLineNonBlankStart { select: false }),
+            Action::MoveToEnd => edit(EC::MoveToEnd { select: false }),
+            Action::MoveToLineEnd => RE::UntilFound(vec![
+                RE::HistoryHintComplete,
+                edit(EC::MoveToLineEnd { select: false }),
+            ]),
+            Action::MoveLineUp => edit(EC::MoveLineUp { select: false }),
+            Action::MoveLineDown => edit(EC::MoveLineDown { select: false }),
+            Action::MoveLeft => edit(EC::MoveLeft { select: false }),
+            Action::MoveRight => edit(EC::MoveRight { select: false }),
+            Action::MoveWordLeft => edit(EC::MoveWordLeft { select: false }),
+            Action::MoveWordRight => RE::UntilFound(vec![
+                RE::HistoryHintWordComplete,
+                edit(EC::MoveWordRight { select: false }),
+            ]),
+            Action::MoveBigWordLeft => edit(EC::MoveBigWordLeft { select: false }),
+            Action::MoveBigWordRight => edit(EC::MoveBigWordRightStart { select: false }),
+            Action::MoveWordRightStart => edit(EC::MoveWordRightStart { select: false }),
+            Action::MoveWordRightEnd => edit(EC::MoveWordRightEnd { select: false }),
+            Action::MoveBigWordRightStart => edit(EC::MoveBigWordRightStart { select: false }),
+            Action::MoveBigWordRightEnd => edit(EC::MoveBigWordRightEnd { select: false }),
+            Action::Backspace => edit(EC::Backspace),
+            Action::Delete => edit(EC::Delete),
+            Action::BackspaceWord => edit(EC::BackspaceWord),
+            Action::DeleteWord => edit(EC::DeleteWord),
+            Action::CutChar => edit(EC::CutChar),
+            Action::Clear => edit(EC::Clear),
+            Action::ClearToLineEnd => edit(EC::ClearToLineEnd),
+            Action::CutCurrentLine => edit(EC::CutCurrentLine),
+            Action::CutFromStart => edit(EC::CutFromStart),
+            Action::CutFromLineStart => edit(EC::CutFromLineStart),
+            Action::CutFromLineNonBlankStart => edit(EC::CutFromLineNonBlankStart),
+            Action::CutToEnd => edit(EC::CutToEnd),
+            Action::CutToLineEnd => edit(EC::CutToLineEnd),
+            Action::KillLine => edit(EC::KillLine),
+            Action::CutWordLeft => edit(EC::CutWordLeft),
+            Action::CutWordRight => edit(EC::CutWordRight),
+            Action::CutBigWordLeft => edit(EC::CutBigWordLeft),
+            Action::CutBigWordRight => edit(EC::CutBigWordRight),
+            Action::PasteCutBufferBefore => edit(EC::PasteCutBufferBefore),
+            Action::PasteCutBufferAfter => edit(EC::PasteCutBufferAfter),
+            Action::Paste => edit(EC::Paste),
+            Action::Undo => edit(EC::Undo),
+            Action::Redo => edit(EC::Redo),
+            Action::UppercaseWord => edit(EC::UppercaseWord),
+            Action::LowercaseWord => edit(EC::LowercaseWord),
+            Action::CapitalizeChar => edit(EC::CapitalizeChar),
+            Action::SwitchcaseChar => edit(EC::SwitchcaseChar),
+            Action::SwapWords => edit(EC::SwapWords),
+            Action::SwapGraphemes => edit(EC::SwapGraphemes),
+            Action::SelectAll => edit(EC::SelectAll),
+            Action::CopySelection => edit(EC::CopySelection),
+            Action::CutSelection => edit(EC::CutSelection),
+            Action::CopyFromStart => edit(EC::CopyFromStart),
+            Action::CopyFromLineStart => edit(EC::CopyFromLineStart),
+            Action::CopyFromLineNonBlankStart => edit(EC::CopyFromLineNonBlankStart),
+            Action::CopyToEnd => edit(EC::CopyToEnd),
+            Action::CopyToLineEnd => edit(EC::CopyToLineEnd),
+            Action::CopyCurrentLine => edit(EC::CopyCurrentLine),
+            Action::CopyWordLeft => edit(EC::CopyWordLeft),
+            Action::CopyWordRight => edit(EC::CopyWordRight),
+            Action::CopyBigWordLeft => edit(EC::CopyBigWordLeft),
+            Action::CopyBigWordRight => edit(EC::CopyBigWordRight),
+            Action::MoveLineUpSelect => edit(EC::MoveLineUp { select: true }),
+            Action::MoveLineDownSelect => edit(EC::MoveLineDown { select: true }),
+            Action::MoveLeftSelect => edit(EC::MoveLeft { select: true }),
+            Action::MoveRightSelect => edit(EC::MoveRight { select: true }),
+            Action::MoveWordLeftSelect => edit(EC::MoveWordLeft { select: true }),
+            Action::MoveWordRightSelect => edit(EC::MoveWordRight { select: true }),
+            Action::MoveToLineStartSelect => edit(EC::MoveToLineStart { select: true }),
+            Action::MoveToLineEndSelect => edit(EC::MoveToLineEnd { select: true }),
+            Action::MoveToStartSelect => edit(EC::MoveToStart { select: true }),
+            Action::MoveToEndSelect => edit(EC::MoveToEnd { select: true }),
         }
     }
 }
@@ -295,7 +806,7 @@ fn default_config_path() -> Option<PathBuf> {
 
 fn parse_config(text: &str) -> Result<AppConfig, String> {
     let mut config = AppConfig::default();
-    let mut in_tui_keybindings = false;
+    let mut section = ConfigSection::Root;
 
     for (line_index, raw_line) in text.lines().enumerate() {
         let line_number = line_index + 1;
@@ -305,40 +816,447 @@ fn parse_config(text: &str) -> Result<AppConfig, String> {
         }
 
         if line.starts_with('[') {
-            in_tui_keybindings = line == "[keybindings.tui]";
-            continue;
-        }
-
-        if !in_tui_keybindings {
+            section = config_section(&line);
             continue;
         }
 
         let (name, value) = line
             .split_once('=')
-            .ok_or_else(|| format!("line {line_number}: expected `name = [\"key\"]`"))?;
-        let action = action_from_name(name.trim()).ok_or_else(|| {
-            format!(
-                "line {line_number}: unknown [keybindings.tui] key `{}`",
-                name.trim()
-            )
-        })?;
-        let keys =
-            parse_string_array(value.trim()).map_err(|err| format!("line {line_number}: {err}"))?;
-        let bindings = keys
-            .iter()
-            .map(|key| parse_key_binding(key).map_err(|err| format!("line {line_number}: {err}")))
-            .collect::<Result<Vec<_>, _>>()?;
-        config.keybindings.tui.set_bindings(action, bindings);
+            .ok_or_else(|| format!("line {line_number}: expected `name = value`"))?;
+
+        match section {
+            ConfigSection::Root => parse_root_setting(&mut config, line_number, name, value)?,
+            ConfigSection::Remap => {
+                parse_key_remap(&mut config.keybindings.remaps, line_number, name, value)?
+            }
+            ConfigSection::Prompt => {
+                parse_prompt_keybinding(&mut config.keybindings.prompt, line_number, name, value)?
+            }
+            ConfigSection::PromptInsert => parse_line_editor_keybinding(
+                &mut config.keybindings.prompt.insert,
+                line_number,
+                name,
+                value,
+                "keybindings.prompt.insert",
+            )?,
+            ConfigSection::PromptEmacs => parse_line_editor_keybinding(
+                &mut config.keybindings.prompt.emacs,
+                line_number,
+                name,
+                value,
+                "keybindings.prompt.emacs",
+            )?,
+            ConfigSection::PromptViInsert => parse_line_editor_keybinding(
+                &mut config.keybindings.prompt.vi_insert,
+                line_number,
+                name,
+                value,
+                "keybindings.prompt.vi_insert",
+            )?,
+            ConfigSection::PromptViNormal => parse_line_editor_keybinding(
+                &mut config.keybindings.prompt.vi_normal,
+                line_number,
+                name,
+                value,
+                "keybindings.prompt.vi_normal",
+            )?,
+            ConfigSection::Command => {
+                parse_command_keybinding(&mut config.keybindings.command, line_number, name, value)?
+            }
+            ConfigSection::Tui => {
+                let (action, operation, bindings) = parse_tui_keybinding(line_number, name, value)?;
+                config
+                    .keybindings
+                    .tui
+                    .apply_update(action, operation, bindings);
+            }
+            ConfigSection::Ignored => {}
+        }
     }
 
     config.keybindings.tui.validate()?;
     Ok(config)
 }
 
-fn action_from_name(name: &str) -> Option<TuiAction> {
+fn config_section(line: &str) -> ConfigSection {
+    match line {
+        "[keybindings.remap]" => ConfigSection::Remap,
+        "[keybindings.prompt]" => ConfigSection::Prompt,
+        "[keybindings.prompt.insert]" => ConfigSection::PromptInsert,
+        "[keybindings.prompt.emacs]" => ConfigSection::PromptEmacs,
+        "[keybindings.prompt.vi_insert]" => ConfigSection::PromptViInsert,
+        "[keybindings.prompt.vi_normal]" => ConfigSection::PromptViNormal,
+        "[keybindings.command]" => ConfigSection::Command,
+        "[keybindings.tui]" => ConfigSection::Tui,
+        _ => ConfigSection::Ignored,
+    }
+}
+
+fn parse_root_setting(
+    config: &mut AppConfig,
+    line_number: usize,
+    name: &str,
+    value: &str,
+) -> Result<(), String> {
+    match normalize_name(name).as_str() {
+        "editmode" => {
+            let value = parse_string_value(value.trim())
+                .map_err(|err| format!("line {line_number}: {err}"))?;
+            config.edit_mode = parse_edit_mode(&value)
+                .ok_or_else(|| format!("line {line_number}: edit_mode must be `emacs` or `vi`"))?;
+            Ok(())
+        }
+        _ => Ok(()),
+    }
+}
+
+fn parse_edit_mode(value: &str) -> Option<ConfigEditMode> {
+    match normalize_name(value).as_str() {
+        "emacs" => Some(ConfigEditMode::Emacs),
+        "vi" => Some(ConfigEditMode::Vi),
+        _ => None,
+    }
+}
+
+fn parse_key_remap(
+    remaps: &mut KeyRemaps,
+    line_number: usize,
+    name: &str,
+    value: &str,
+) -> Result<(), String> {
+    let (name, operation) = parse_key_remap_operation(name);
+    let from = parse_key_name(name)
+        .and_then(|name| parse_key_binding(&name))
+        .map_err(|err| format!("line {line_number}: {err}"))?;
+    let to = parse_string_value(value.trim())
+        .and_then(|name| parse_key_binding(&name))
+        .map_err(|err| format!("line {line_number}: {err}"))?;
+    remaps.set(from, to);
+    if operation == KeyRemapOperation::Swap {
+        remaps.set(to, from);
+    }
+    Ok(())
+}
+
+fn parse_key_remap_operation(name: &str) -> (&str, KeyRemapOperation) {
+    let name = name.trim();
+    if let Some(key) = name.strip_suffix(".swap") {
+        (key.trim(), KeyRemapOperation::Swap)
+    } else {
+        (name, KeyRemapOperation::Set)
+    }
+}
+
+fn parse_prompt_keybinding(
+    keybindings: &mut PromptKeybindings,
+    line_number: usize,
+    name: &str,
+    value: &str,
+) -> Result<(), String> {
+    let (action_name, operation) = parse_keybinding_operation(name);
+    let action = prompt_action_from_name(action_name).ok_or_else(|| {
+        format!(
+            "line {line_number}: unknown [keybindings.prompt] key `{}`",
+            action_name
+        )
+    })?;
+    let bindings = parse_key_bindings_value(line_number, value)?;
+    let target = match action {
+        PromptAction::Complete => &mut keybindings.complete,
+        PromptAction::CycleDisplay => &mut keybindings.cycle_display,
+        PromptAction::CommandMode => &mut keybindings.command_mode,
+    };
+    apply_bindings_update(target, operation, bindings);
+    Ok(())
+}
+
+fn parse_line_editor_keybinding(
+    keybindings: &mut LineEditorKeybindings,
+    line_number: usize,
+    name: &str,
+    value: &str,
+    section: &str,
+) -> Result<(), String> {
+    let (action_name, operation) = parse_keybinding_operation(name);
+    let action = line_editor_action_from_name(action_name).ok_or_else(|| {
+        format!(
+            "line {line_number}: unknown [{section}] key `{}`",
+            action_name
+        )
+    })?;
+    let bindings = parse_key_bindings_value(line_number, value)?;
+    keybindings.push_update(action, operation, bindings);
+    Ok(())
+}
+
+fn parse_command_keybinding(
+    keybindings: &mut CommandKeybindings,
+    line_number: usize,
+    name: &str,
+    value: &str,
+) -> Result<(), String> {
+    let (action_name, operation) = parse_keybinding_operation(name);
+    let bindings = parse_key_bindings_value(line_number, value)?;
+
+    if let Some(action) = command_action_from_name(action_name) {
+        let target = match action {
+            CommandAction::Complete => &mut keybindings.complete,
+            CommandAction::Cancel => &mut keybindings.cancel,
+        };
+        apply_bindings_update(target, operation, bindings);
+        return Ok(());
+    }
+
+    let action = line_editor_action_from_name(action_name).ok_or_else(|| {
+        format!(
+            "line {line_number}: unknown [keybindings.command] key `{}`",
+            action_name
+        )
+    })?;
+    keybindings.editor.push_update(action, operation, bindings);
+    Ok(())
+}
+
+fn parse_tui_keybinding(
+    line_number: usize,
+    name: &str,
+    value: &str,
+) -> Result<(TuiAction, KeyBindingOperation, Vec<KeyBinding>), String> {
+    let (action_name, operation) = parse_keybinding_operation(name);
+    let action = tui_action_from_name(action_name).ok_or_else(|| {
+        format!(
+            "line {line_number}: unknown [keybindings.tui] key `{}`",
+            action_name
+        )
+    })?;
+    let bindings = parse_key_bindings_value(line_number, value)?;
+    Ok((action, operation, bindings))
+}
+
+fn parse_keybinding_operation(name: &str) -> (&str, KeyBindingOperation) {
+    let name = name.trim();
+    if let Some(action) = name.strip_suffix(".add") {
+        (action.trim(), KeyBindingOperation::Add)
+    } else if let Some(action) = name.strip_suffix(".remove") {
+        (action.trim(), KeyBindingOperation::Remove)
+    } else if let Some(action) = name.strip_suffix(".set") {
+        (action.trim(), KeyBindingOperation::Set)
+    } else {
+        (name, KeyBindingOperation::Set)
+    }
+}
+
+fn parse_key_bindings_value(line_number: usize, value: &str) -> Result<Vec<KeyBinding>, String> {
+    let keys =
+        parse_string_array(value.trim()).map_err(|err| format!("line {line_number}: {err}"))?;
+    keys.iter()
+        .map(|key| parse_key_binding(key).map_err(|err| format!("line {line_number}: {err}")))
+        .collect()
+}
+
+fn tui_action_from_name(name: &str) -> Option<TuiAction> {
+    let name = normalize_name(name);
     TuiAction::ALL
         .into_iter()
-        .find(|action| action.name() == name)
+        .find(|action| normalize_name(action.name()) == name)
+}
+
+fn prompt_action_from_name(name: &str) -> Option<PromptAction> {
+    match normalize_name(name).as_str() {
+        "complete" => Some(PromptAction::Complete),
+        "cycledisplay" => Some(PromptAction::CycleDisplay),
+        "commandmode" => Some(PromptAction::CommandMode),
+        _ => None,
+    }
+}
+
+fn command_action_from_name(name: &str) -> Option<CommandAction> {
+    match normalize_name(name).as_str() {
+        "complete" => Some(CommandAction::Complete),
+        "cancel" => Some(CommandAction::Cancel),
+        _ => None,
+    }
+}
+
+fn line_editor_action_from_name(name: &str) -> Option<LineEditorAction> {
+    use LineEditorAction as Action;
+
+    match normalize_name(name).as_str() {
+        "esc" | "escape" => Some(Action::Esc),
+        "ctrlc" | "controlc" => Some(Action::CtrlC),
+        "ctrld" | "controld" => Some(Action::CtrlD),
+        "clearscreen" => Some(Action::ClearScreen),
+        "searchhistory" => Some(Action::SearchHistory),
+        "openeditor" => Some(Action::OpenEditor),
+        "enter" => Some(Action::Enter),
+        "insertnewline" => Some(Action::InsertNewline),
+        "up" => Some(Action::Up),
+        "down" => Some(Action::Down),
+        "left" => Some(Action::Left),
+        "right" => Some(Action::Right),
+        "tostart" => Some(Action::ToStart),
+        "toend" => Some(Action::ToEnd),
+        "movetostart" => Some(Action::MoveToStart),
+        "movetolinestart" | "linestart" => Some(Action::MoveToLineStart),
+        "movetolinenonblankstart" => Some(Action::MoveToLineNonBlankStart),
+        "movetoend" => Some(Action::MoveToEnd),
+        "movetolineend" | "lineend" => Some(Action::MoveToLineEnd),
+        "movelineup" => Some(Action::MoveLineUp),
+        "movelinedown" => Some(Action::MoveLineDown),
+        "moveleft" => Some(Action::MoveLeft),
+        "moveright" => Some(Action::MoveRight),
+        "movewordleft" | "wordleft" => Some(Action::MoveWordLeft),
+        "movewordright" | "wordright" => Some(Action::MoveWordRight),
+        "movebigwordleft" => Some(Action::MoveBigWordLeft),
+        "movebigwordright" => Some(Action::MoveBigWordRight),
+        "movewordrightstart" => Some(Action::MoveWordRightStart),
+        "movewordrightend" => Some(Action::MoveWordRightEnd),
+        "movebigwordrightstart" => Some(Action::MoveBigWordRightStart),
+        "movebigwordrightend" => Some(Action::MoveBigWordRightEnd),
+        "backspace" => Some(Action::Backspace),
+        "delete" => Some(Action::Delete),
+        "backspaceword" => Some(Action::BackspaceWord),
+        "deleteword" => Some(Action::DeleteWord),
+        "cutchar" => Some(Action::CutChar),
+        "clear" => Some(Action::Clear),
+        "cleartolineend" => Some(Action::ClearToLineEnd),
+        "cutcurrentline" => Some(Action::CutCurrentLine),
+        "cutfromstart" => Some(Action::CutFromStart),
+        "cutfromlinestart" => Some(Action::CutFromLineStart),
+        "cutfromlinenonblankstart" => Some(Action::CutFromLineNonBlankStart),
+        "cuttoend" => Some(Action::CutToEnd),
+        "cuttolineend" => Some(Action::CutToLineEnd),
+        "killline" => Some(Action::KillLine),
+        "cutwordleft" => Some(Action::CutWordLeft),
+        "cutwordright" => Some(Action::CutWordRight),
+        "cutbigwordleft" => Some(Action::CutBigWordLeft),
+        "cutbigwordright" => Some(Action::CutBigWordRight),
+        "pastecutbufferbefore" => Some(Action::PasteCutBufferBefore),
+        "pastecutbufferafter" => Some(Action::PasteCutBufferAfter),
+        "paste" => Some(Action::Paste),
+        "undo" => Some(Action::Undo),
+        "redo" => Some(Action::Redo),
+        "uppercaseword" => Some(Action::UppercaseWord),
+        "lowercaseword" => Some(Action::LowercaseWord),
+        "capitalizechar" => Some(Action::CapitalizeChar),
+        "switchcasechar" => Some(Action::SwitchcaseChar),
+        "swapwords" => Some(Action::SwapWords),
+        "swapgraphemes" => Some(Action::SwapGraphemes),
+        "selectall" => Some(Action::SelectAll),
+        "copyselection" => Some(Action::CopySelection),
+        "cutselection" => Some(Action::CutSelection),
+        "copyfromstart" => Some(Action::CopyFromStart),
+        "copyfromlinestart" => Some(Action::CopyFromLineStart),
+        "copyfromlinenonblankstart" => Some(Action::CopyFromLineNonBlankStart),
+        "copytoend" => Some(Action::CopyToEnd),
+        "copytolineend" => Some(Action::CopyToLineEnd),
+        "copycurrentline" => Some(Action::CopyCurrentLine),
+        "copywordleft" => Some(Action::CopyWordLeft),
+        "copywordright" => Some(Action::CopyWordRight),
+        "copybigwordleft" => Some(Action::CopyBigWordLeft),
+        "copybigwordright" => Some(Action::CopyBigWordRight),
+        "movelineupselect" | "selectup" => Some(Action::MoveLineUpSelect),
+        "movelinedownselect" | "selectdown" => Some(Action::MoveLineDownSelect),
+        "moveleftselect" | "selectleft" => Some(Action::MoveLeftSelect),
+        "moverightselect" | "selectright" => Some(Action::MoveRightSelect),
+        "movewordleftselect" | "selectwordleft" => Some(Action::MoveWordLeftSelect),
+        "movewordrightselect" | "selectwordright" => Some(Action::MoveWordRightSelect),
+        "movetolinestartselect" | "selectlinestart" => Some(Action::MoveToLineStartSelect),
+        "movetolineendselect" | "selectlineend" => Some(Action::MoveToLineEndSelect),
+        "movetostartselect" | "selectbufferstart" => Some(Action::MoveToStartSelect),
+        "movetoendselect" | "selectbufferend" => Some(Action::MoveToEndSelect),
+        _ => None,
+    }
+}
+
+fn add_event_bindings(
+    keybindings: &mut reedline::Keybindings,
+    bindings: &[KeyBinding],
+    event: ReedlineEvent,
+) {
+    for binding in bindings {
+        keybindings.add_binding(binding.modifiers, binding.code, event.clone());
+    }
+}
+
+fn remove_event_bindings(keybindings: &mut reedline::Keybindings, event: &ReedlineEvent) {
+    let keys = keybindings
+        .get_keybindings()
+        .iter()
+        .filter_map(|(key, existing_event)| {
+            (existing_event == event).then_some((key.modifier, key.key_code))
+        })
+        .collect::<Vec<_>>();
+
+    for (modifiers, code) in keys {
+        keybindings.remove_binding(modifiers, code);
+    }
+}
+
+fn apply_bindings_update(
+    target: &mut Vec<KeyBinding>,
+    operation: KeyBindingOperation,
+    bindings: Vec<KeyBinding>,
+) {
+    match operation {
+        KeyBindingOperation::Set => *target = dedup_bindings(bindings),
+        KeyBindingOperation::Add => add_bindings(target, bindings),
+        KeyBindingOperation::Remove => remove_bindings(target, &bindings),
+    }
+}
+
+fn dedup_bindings(bindings: Vec<KeyBinding>) -> Vec<KeyBinding> {
+    bindings
+        .into_iter()
+        .fold(Vec::new(), |mut unique, binding| {
+            if !unique.contains(&binding) {
+                unique.push(binding);
+            }
+            unique
+        })
+}
+
+fn add_bindings(target: &mut Vec<KeyBinding>, bindings: Vec<KeyBinding>) {
+    for binding in bindings {
+        if !target.contains(&binding) {
+            target.push(binding);
+        }
+    }
+}
+
+fn remove_bindings(target: &mut Vec<KeyBinding>, bindings: &[KeyBinding]) {
+    target.retain(|binding| !bindings.contains(binding));
+}
+
+fn normalize_name(name: &str) -> String {
+    name.chars()
+        .filter(|ch| ch.is_ascii_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
+fn parse_string_value(value: &str) -> Result<String, String> {
+    let mut chars = value.chars().peekable();
+    skip_whitespace(&mut chars);
+    let value = parse_quoted_string(&mut chars)?;
+    skip_whitespace(&mut chars);
+
+    if chars.peek().is_none() {
+        Ok(value)
+    } else {
+        Err("unexpected text after string".to_owned())
+    }
+}
+
+fn parse_key_name(name: &str) -> Result<String, String> {
+    let name = name.trim();
+    if name.starts_with('"') {
+        parse_string_value(name)
+    } else if name.is_empty() {
+        Err("key binding cannot be empty".to_owned())
+    } else {
+        Ok(name.to_owned())
+    }
 }
 
 fn strip_comment(line: &str) -> String {
@@ -499,12 +1417,15 @@ fn parse_key_binding(name: &str) -> Result<KeyBinding, String> {
         "up" => KeyCode::Up,
         "right" => KeyCode::Right,
         "down" => KeyCode::Down,
+        "home" => KeyCode::Home,
+        "end" => KeyCode::End,
         "pageup" | "page-up" => KeyCode::PageUp,
         "pagedown" | "page-down" => KeyCode::PageDown,
         "esc" | "escape" => KeyCode::Esc,
         "enter" | "return" => KeyCode::Enter,
         "tab" => KeyCode::Tab,
         "backspace" => KeyCode::Backspace,
+        "delete" | "del" => KeyCode::Delete,
         "space" => KeyCode::Char(' '),
         key if key.chars().count() == 1 => KeyCode::Char(
             key.chars()
@@ -528,12 +1449,15 @@ fn key_code_name(code: KeyCode) -> String {
         KeyCode::Up => "up".to_owned(),
         KeyCode::Right => "right".to_owned(),
         KeyCode::Down => "down".to_owned(),
+        KeyCode::Home => "home".to_owned(),
+        KeyCode::End => "end".to_owned(),
         KeyCode::PageUp => "pageup".to_owned(),
         KeyCode::PageDown => "pagedown".to_owned(),
         KeyCode::Esc => "esc".to_owned(),
         KeyCode::Enter => "enter".to_owned(),
         KeyCode::Tab => "tab".to_owned(),
         KeyCode::Backspace => "backspace".to_owned(),
+        KeyCode::Delete => "delete".to_owned(),
         KeyCode::Char(' ') => "space".to_owned(),
         KeyCode::Char(ch) => ch.to_string(),
         _ => format!("{code:?}").to_ascii_lowercase(),
@@ -554,6 +1478,109 @@ mod tests {
 
         // Then
         assert!(has_tui_table);
+    }
+
+    #[test]
+    fn default_keybindings_toml_parses() {
+        // Given
+        let defaults = DEFAULT_KEYBINDINGS_TOML;
+
+        // When
+        let config = parse_config(defaults).expect("default keybindings should parse");
+
+        // Then
+        assert_eq!(config.edit_mode, ConfigEditMode::Emacs);
+    }
+
+    #[test]
+    fn config_parses_vi_edit_mode() {
+        // Given
+        let text = "edit_mode = \"vi\"\n";
+
+        // When
+        let config = parse_config(text).expect("config should parse");
+
+        // Then
+        assert_eq!(config.edit_mode, ConfigEditMode::Vi);
+    }
+
+    #[test]
+    fn key_remap_swaps_plain_characters() {
+        // Given
+        let text = "[keybindings.remap]\nh = \"i\"\ni = \"h\"\n";
+        let h = KeyEvent::new(KeyCode::Char('h'), KeyModifiers::NONE);
+        let i = KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE);
+
+        // When
+        let config = parse_config(text).expect("config should parse");
+        let remapped_h = config.keybindings.remaps.remap_key_event(h);
+        let remapped_i = config.keybindings.remaps.remap_key_event(i);
+
+        // Then
+        assert_eq!(remapped_h.code, KeyCode::Char('i'));
+        assert_eq!(remapped_i.code, KeyCode::Char('h'));
+    }
+
+    #[test]
+    fn key_remap_swap_syntax_adds_bidirectional_remaps() {
+        // Given
+        let text = "[keybindings.remap]\nh.swap = \"i\"\n";
+        let h = KeyEvent::new(KeyCode::Char('h'), KeyModifiers::NONE);
+        let i = KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE);
+
+        // When
+        let config = parse_config(text).expect("config should parse");
+        let remapped_h = config.keybindings.remaps.remap_key_event(h);
+        let remapped_i = config.keybindings.remaps.remap_key_event(i);
+
+        // Then
+        assert_eq!(remapped_h.code, KeyCode::Char('i'));
+        assert_eq!(remapped_i.code, KeyCode::Char('h'));
+    }
+
+    #[test]
+    fn key_remap_preserves_shifted_character_intent() {
+        // Given
+        let text = "[keybindings.remap]\nh = \"i\"\n";
+        let shifted_h = KeyEvent::new(KeyCode::Char('H'), KeyModifiers::NONE);
+
+        // When
+        let config = parse_config(text).expect("config should parse");
+        let remapped = config.keybindings.remaps.remap_key_event(shifted_h);
+
+        // Then
+        assert_eq!(remapped.code, KeyCode::Char('i'));
+        assert!(remapped.modifiers.contains(KeyModifiers::SHIFT));
+    }
+
+    #[test]
+    fn key_remap_supports_explicit_modified_keys() {
+        // Given
+        let text = "[keybindings.remap]\nctrl-h = \"ctrl-i\"\n";
+        let ctrl_h = KeyEvent::new(KeyCode::Char('h'), KeyModifiers::CONTROL);
+
+        // When
+        let config = parse_config(text).expect("config should parse");
+        let remapped = config.keybindings.remaps.remap_key_event(ctrl_h);
+
+        // Then
+        assert_eq!(remapped.code, KeyCode::Char('i'));
+        assert_eq!(remapped.modifiers, KeyModifiers::CONTROL);
+    }
+
+    #[test]
+    fn key_remap_swap_syntax_supports_explicit_modified_keys() {
+        // Given
+        let text = "[keybindings.remap]\nctrl-h.swap = \"ctrl-i\"\n";
+        let ctrl_i = KeyEvent::new(KeyCode::Char('i'), KeyModifiers::CONTROL);
+
+        // When
+        let config = parse_config(text).expect("config should parse");
+        let remapped = config.keybindings.remaps.remap_key_event(ctrl_i);
+
+        // Then
+        assert_eq!(remapped.code, KeyCode::Char('h'));
+        assert_eq!(remapped.modifiers, KeyModifiers::CONTROL);
     }
 
     #[test]
@@ -603,10 +1630,59 @@ mod tests {
     }
 
     #[test]
+    fn prompt_keybindings_can_patch_defaults() {
+        // Given
+        let text = "[keybindings.prompt]\ncomplete.remove = [\"ctrl-space\"]\ncomplete.add = [\"ctrl-x\"]\n";
+        let ctrl_space = parse_key_binding("ctrl-space").expect("binding should parse");
+        let ctrl_x = parse_key_binding("ctrl-x").expect("binding should parse");
+
+        // When
+        let config = parse_config(text).expect("config should parse");
+
+        // Then
+        assert!(!config.keybindings.prompt.complete.contains(&ctrl_space));
+        assert!(config.keybindings.prompt.complete.contains(&ctrl_x));
+    }
+
+    #[test]
+    fn line_editor_keybindings_patch_reedline_defaults() {
+        // Given
+        let text = "[keybindings.prompt.insert]\nClearScreen = [\"ctrl-x\"]\n";
+        let mut keybindings = reedline::default_emacs_keybindings();
+
+        // When
+        let config = parse_config(text).expect("config should parse");
+        config.keybindings.prompt.insert.apply_to(&mut keybindings);
+
+        // Then
+        assert_eq!(
+            keybindings.find_binding(KeyModifiers::CONTROL, KeyCode::Char('x')),
+            Some(ReedlineEvent::ClearScreen)
+        );
+        assert_eq!(
+            keybindings.find_binding(KeyModifiers::CONTROL, KeyCode::Char('l')),
+            None
+        );
+    }
+
+    #[test]
     fn key_binding_matches_shift_char_sent_as_uppercase() {
         // Given
         let binding = parse_key_binding("shift-h").expect("binding should parse");
         let key = KeyEvent::new(KeyCode::Char('H'), KeyModifiers::NONE);
+
+        // When
+        let matches = binding.matches(key);
+
+        // Then
+        assert!(matches);
+    }
+
+    #[test]
+    fn key_binding_matches_shifted_punctuation() {
+        // Given
+        let binding = parse_key_binding(":").expect("binding should parse");
+        let key = KeyEvent::new(KeyCode::Char(':'), KeyModifiers::SHIFT);
 
         // When
         let matches = binding.matches(key);
