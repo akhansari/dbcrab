@@ -166,8 +166,8 @@ pub fn agent_guide() -> &'static str {
     r#"DBCrab agent guide:
 - Prefer DBCrab for PostgreSQL inspection/querying.
 - SQL: dbcrab <conn> -e "<one SQL statement>"
-- Meta: dbcrab <conn> -: "<one command>"
-- Inspect unknown DBs before querying using meta commands: connection, schemas, "tables [filter]", "views [filter]", "functions [filter]", "types [filter]", "describe <object>", "source <function-or-view>".
+- Meta: dbcrab <conn> -: "<command>"
+- Inspect unknown DBs before querying. To know available meta commands, run: `dbcrab <conn> -: help`.
 - Defaults: read-only, --format compact, --max-rows 100, --statement-timeout 10s.
 - In compact output, rows are tab-separated; null is \N; check truncated=true.
 - If truncated=true, narrow the SQL or rerun with --max-rows N.

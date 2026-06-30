@@ -57,17 +57,12 @@ async fn run() -> AppResult<i32> {
     print_status(interactive, "Connecting...");
     let pool = connection::connect(&args.connection).await?;
 
-    print_status(interactive, "Connected. Loading metadata...");
-    let catalog = if interactive {
-        catalog::Catalog::load(&pool).await?
-    } else {
-        catalog::Catalog::load_unattended(&pool).await?
-    };
-    print_status(interactive, &format!("Loaded {}.", catalog.summary()));
-    let catalog = catalog::shared_catalog(catalog);
-
     match mode {
         cli::RunMode::Interactive => {
+            print_status(interactive, "Connected. Loading metadata...");
+            let catalog = catalog::Catalog::load(&pool).await?;
+            print_status(interactive, &format!("Loaded {}.", catalog.summary()));
+            let catalog = catalog::shared_catalog(catalog);
             let config = config.expect("interactive mode loads config");
             repl::run(
                 pool,
@@ -86,12 +81,14 @@ async fn run() -> AppResult<i32> {
                     Ok(0)
                 }
                 Err(err) => {
-                    print_agent_error(&err, Some(&sql), &catalog, options.format);
+                    print_agent_error_with_lazy_catalog(&pool, &err, Some(&sql), options.format)
+                        .await;
                     Ok(1)
                 }
             }
         }
         cli::RunMode::Command { command, options } => {
+            let catalog = catalog::shared_catalog(catalog::Catalog::default());
             match agent::execute_command(&pool, &catalog, &command).await {
                 Ok(output) => {
                     print!("{}", agent::render_output(&output, &options));
@@ -104,6 +101,22 @@ async fn run() -> AppResult<i32> {
             }
         }
     }
+}
+
+async fn print_agent_error_with_lazy_catalog(
+    pool: &sqlx::PgPool,
+    err: &AppError,
+    statement: Option<&str>,
+    format: agent::AgentFormat,
+) {
+    let catalog = match err {
+        AppError::Sqlx(_) => catalog::Catalog::load_unattended(pool).await.ok(),
+        AppError::Io(_) | AppError::Message(_) => None,
+    };
+    print!(
+        "{}",
+        agent::render_error(err, statement, catalog.as_ref(), format)
+    );
 }
 
 fn print_status(interactive: bool, message: &str) {
