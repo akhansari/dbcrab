@@ -256,20 +256,6 @@ pub fn first_keyword(statement: &str) -> Option<String> {
     None
 }
 
-pub fn command_status(statement: &str, rows_affected: u64) -> String {
-    match first_keyword(statement).as_deref() {
-        Some("insert") => format!("INSERT {rows_affected}"),
-        Some("update") => format!("UPDATE {rows_affected}"),
-        Some("delete") => format!("DELETE {rows_affected}"),
-        Some("copy") => format!("COPY {rows_affected}"),
-        Some("move") => format!("MOVE {rows_affected}"),
-        Some("fetch") => format!("FETCH {rows_affected}"),
-        Some("select") => format!("SELECT {rows_affected}"),
-        _ if rows_affected > 0 => format!("OK {rows_affected}"),
-        _ => "OK".to_owned(),
-    }
-}
-
 fn contains_returning(statement: &str) -> bool {
     let mut word = String::new();
     let mut state = ScanState::Normal;
@@ -483,17 +469,5 @@ mod tests {
 
         // Then
         assert!(!read_only);
-    }
-
-    #[test]
-    fn command_status_formats_dml_counts() {
-        // Given
-        let statement = "update users set active = true;";
-
-        // When
-        let status = command_status(statement, 3);
-
-        // Then
-        assert_eq!(status, "UPDATE 3");
     }
 }

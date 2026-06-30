@@ -819,6 +819,15 @@ pub fn render_row_count(count: usize) -> String {
         .to_string()
 }
 
+pub fn render_rows_affected(count: u64) -> String {
+    let row_word = if count == 1 { "row" } else { "rows" };
+
+    AnsiStyle::new()
+        .dimmed()
+        .paint(format!("({count} {row_word} affected)"))
+        .to_string()
+}
+
 fn terminal_table_width() -> usize {
     terminal_dimensions().table_width()
 }
@@ -931,6 +940,18 @@ mod tests {
 
         // Then
         assert_eq!(formatted, "\u{1b}[2m(2 rows)\u{1b}[0m");
+    }
+
+    #[test]
+    fn rows_affected_is_dimmed() {
+        // Given
+        let count = 2;
+
+        // When
+        let formatted = render_rows_affected(count);
+
+        // Then
+        assert_eq!(formatted, "\u{1b}[2m(2 rows affected)\u{1b}[0m");
     }
 
     #[test]

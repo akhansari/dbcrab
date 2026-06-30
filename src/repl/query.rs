@@ -4,8 +4,11 @@ use crate::{
     catalog::SharedCatalog,
     config::{KeyRemaps, TuiKeybindings},
     errors::{AppResult, format_query_error},
-    render::{DisplayMode, ResultGrid, RowsDisplay, render_row_count, render_rows, rows_display},
-    sql::{command_status, likely_returns_rows},
+    render::{
+        DisplayMode, ResultGrid, RowsDisplay, render_row_count, render_rows, render_rows_affected,
+        rows_display,
+    },
+    sql::{first_keyword, likely_returns_rows},
 };
 
 use super::output::print_rows_display;
@@ -39,7 +42,10 @@ pub(super) async fn execute_statement(
             .execute(pool)
             .await
         {
-            Ok(result) => println!("{}", command_status(statement, result.rows_affected())),
+            Ok(result) => println!(
+                "{}",
+                render_statement_status(statement, result.rows_affected())
+            ),
             Err(err) => print_query_error(&err, statement, catalog),
         }
     }
@@ -80,6 +86,23 @@ async fn add_update_metadata(
     }
 }
 
+fn render_statement_status(statement: &str, rows_affected: u64) -> String {
+    if rows_affected > 0 || statement_reports_rows_affected(statement) {
+        render_rows_affected(rows_affected)
+    } else {
+        "OK".to_owned()
+    }
+}
+
+fn statement_reports_rows_affected(statement: &str) -> bool {
+    first_keyword(statement).is_some_and(|keyword| {
+        matches!(
+            keyword.as_str(),
+            "copy" | "delete" | "fetch" | "insert" | "merge" | "move" | "update"
+        )
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -97,5 +120,29 @@ mod tests {
             RowsDisplay::Inline(output) => assert_eq!(output, render_row_count(0)),
             RowsDisplay::Tui(_) => panic!("empty results should not open TUI"),
         }
+    }
+
+    #[test]
+    fn statement_status_renders_dml_rows_affected() {
+        // Given
+        let statement = "update users set active = false";
+
+        // When
+        let rendered = render_statement_status(statement, 2);
+
+        // Then
+        assert_eq!(rendered, "\u{1b}[2m(2 rows affected)\u{1b}[0m");
+    }
+
+    #[test]
+    fn statement_status_renders_ok_for_ddl_without_affected_rows() {
+        // Given
+        let statement = "create table users(id bigint)";
+
+        // When
+        let rendered = render_statement_status(statement, 0);
+
+        // Then
+        assert_eq!(rendered, "OK");
     }
 }

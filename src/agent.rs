@@ -8,7 +8,7 @@ use crate::{
     errors::{AppError, AppResult, query_error_details},
     meta::{self, CommandOutcome, MetaOutput, MetaSection},
     render::{CellValue, ResultGrid},
-    sql::{command_status, is_read_only_statement, likely_returns_rows, split_complete_statements},
+    sql::{is_read_only_statement, likely_returns_rows, split_complete_statements},
 };
 
 pub const DEFAULT_MAX_ROWS: usize = 100;
@@ -64,10 +64,8 @@ pub struct AgentStatementOutput {
 #[derive(Debug, Clone)]
 enum AgentStatementResult {
     Rows(ResultGrid),
-    Status {
-        status: String,
-        rows_affected: Option<u64>,
-    },
+    RowsAffected { rows_affected: u64 },
+    Status { status: String },
 }
 
 #[derive(Debug, Clone)]
@@ -109,9 +107,8 @@ pub async fn execute_sql(
         let result = sqlx::query(AssertSqlSafe(statement.clone()))
             .execute(&mut *tx)
             .await?;
-        AgentStatementResult::Status {
-            status: command_status(&statement, result.rows_affected()),
-            rows_affected: Some(result.rows_affected()),
+        AgentStatementResult::RowsAffected {
+            rows_affected: result.rows_affected(),
         }
     };
 
@@ -138,8 +135,8 @@ pub async fn execute_command(
 
     Ok(match outcome {
         CommandOutcome::Output(output) => AgentOutput::Meta(AgentMetaOutput { elapsed_ms, output }),
-        CommandOutcome::None => status_output(elapsed_ms, "OK", None),
-        CommandOutcome::Exit => status_output(elapsed_ms, "EXIT", None),
+        CommandOutcome::None => status_output(elapsed_ms, "OK"),
+        CommandOutcome::Exit => status_output(elapsed_ms, "EXIT"),
     })
 }
 
@@ -165,9 +162,9 @@ pub fn render_error(
 pub fn agent_guide() -> &'static str {
     r#"DBCrab agent guide:
 - Prefer DBCrab for PostgreSQL inspection/querying.
-- SQL: dbcrab <conn> -e "<one SQL statement>"
-- Meta: dbcrab <conn> -: "<command>"
-- Inspect unknown DBs before querying. To know available meta commands, run: `dbcrab <conn> -: help`.
+- SQL: dbcrab <conn> -e=`<one SQL statement>`.
+- Meta: dbcrab <conn> -:=`<command>`.
+- Inspect unknown DBs before querying. To know available meta commands, run: dbcrab <conn> -: help.
 - Defaults: read-only, --format compact, --max-rows 100, --statement-timeout 10s.
 - In compact output, rows are tab-separated; null is \N; check truncated=true.
 - If truncated=true, narrow the SQL or rerun with --max-rows N.
@@ -176,16 +173,11 @@ pub fn agent_guide() -> &'static str {
 "#
 }
 
-fn status_output(
-    elapsed_ms: u128,
-    status: impl Into<String>,
-    rows_affected: Option<u64>,
-) -> AgentOutput {
+fn status_output(elapsed_ms: u128, status: impl Into<String>) -> AgentOutput {
     AgentOutput::Statement(AgentStatementOutput {
         elapsed_ms,
         result: AgentStatementResult::Status {
             status: status.into(),
-            rows_affected,
         },
     })
 }
@@ -216,20 +208,15 @@ fn render_statement_compact(output: &AgentStatementOutput, max_rows: usize) -> S
         AgentStatementResult::Rows(grid) => {
             render_grid_compact(None, grid, output.elapsed_ms, max_rows)
         }
-        AgentStatementResult::Status {
-            status,
-            rows_affected,
-        } => {
-            let mut parts = vec![
-                "ok".to_owned(),
-                format!("status={}", compact_header_value(status)),
-                format!("elapsed_ms={}", output.elapsed_ms),
-            ];
-            if let Some(rows_affected) = rows_affected {
-                parts.insert(2, format!("rows_affected={rows_affected}"));
-            }
-            format!("{}\n", parts.join(" "))
-        }
+        AgentStatementResult::RowsAffected { rows_affected } => format!(
+            "ok rows_affected={rows_affected} elapsed_ms={}\n",
+            output.elapsed_ms
+        ),
+        AgentStatementResult::Status { status } => format!(
+            "ok status={} elapsed_ms={}\n",
+            compact_header_value(status),
+            output.elapsed_ms
+        ),
     }
 }
 
@@ -308,14 +295,16 @@ fn render_output_column_json(output: &AgentOutput, max_rows: usize) -> String {
 fn render_statement_column_json(output: &AgentStatementOutput, max_rows: usize) -> String {
     let value = match &output.result {
         AgentStatementResult::Rows(grid) => grid_json("rows", grid, output.elapsed_ms, max_rows),
-        AgentStatementResult::Status {
-            status,
-            rows_affected,
-        } => json!({
+        AgentStatementResult::RowsAffected { rows_affected } => json!({
+            "ok": true,
+            "kind": "rows_affected",
+            "rows_affected": rows_affected,
+            "elapsed_ms": output.elapsed_ms,
+        }),
+        AgentStatementResult::Status { status } => json!({
             "ok": true,
             "kind": "status",
             "status": status,
-            "rows_affected": rows_affected,
             "elapsed_ms": output.elapsed_ms,
         }),
     };
@@ -574,6 +563,35 @@ mod tests {
     }
 
     #[test]
+    fn compact_result_reports_rows_affected_without_status() {
+        // Given
+        let output = AgentOutput::Statement(AgentStatementOutput {
+            elapsed_ms: 4,
+            result: AgentStatementResult::RowsAffected { rows_affected: 3 },
+        });
+        let options = AgentOptions::default();
+
+        // When
+        let rendered = render_output(&output, &options);
+
+        // Then
+        assert_eq!(rendered, "ok rows_affected=3 elapsed_ms=4\n");
+    }
+
+    #[test]
+    fn compact_result_keeps_meta_command_status() {
+        // Given
+        let output = status_output(4, "OK");
+        let options = AgentOptions::default();
+
+        // When
+        let rendered = render_output(&output, &options);
+
+        // Then
+        assert_eq!(rendered, "ok status=OK elapsed_ms=4\n");
+    }
+
+    #[test]
     fn column_json_result_keeps_columnar_rows() {
         // Given
         let output = AgentOutput::Statement(AgentStatementOutput {
@@ -604,6 +622,33 @@ mod tests {
                 "returned_rows": 1,
                 "truncated": false,
                 "elapsed_ms": 8,
+            })
+        );
+    }
+
+    #[test]
+    fn column_json_result_reports_rows_affected_without_status() {
+        // Given
+        let output = AgentOutput::Statement(AgentStatementOutput {
+            elapsed_ms: 4,
+            result: AgentStatementResult::RowsAffected { rows_affected: 3 },
+        });
+        let options = AgentOptions {
+            format: AgentFormat::ColumnJson,
+            ..AgentOptions::default()
+        };
+
+        // When
+        let rendered = render_output(&output, &options);
+
+        // Then
+        assert_eq!(
+            serde_json::from_str::<Value>(&rendered).expect("column JSON should parse"),
+            json!({
+                "ok": true,
+                "kind": "rows_affected",
+                "rows_affected": 3,
+                "elapsed_ms": 4,
             })
         );
     }
