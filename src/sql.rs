@@ -191,6 +191,15 @@ pub fn likely_returns_rows(statement: &str) -> bool {
     ) || contains_returning(statement)
 }
 
+pub fn is_read_only_statement(statement: &str) -> bool {
+    first_keyword(statement).is_some_and(|keyword| {
+        matches!(
+            keyword.as_str(),
+            "select" | "with" | "show" | "values" | "table" | "explain"
+        )
+    })
+}
+
 pub fn first_keyword(statement: &str) -> Option<String> {
     let mut chars = statement.char_indices().peekable();
 
@@ -450,6 +459,30 @@ mod tests {
 
         // Then
         assert!(returns_rows);
+    }
+
+    #[test]
+    fn read_only_statement_allows_select() {
+        // Given
+        let statement = "select * from users";
+
+        // When
+        let read_only = is_read_only_statement(statement);
+
+        // Then
+        assert!(read_only);
+    }
+
+    #[test]
+    fn read_only_statement_rejects_update_returning() {
+        // Given
+        let statement = "update users set active = false returning id";
+
+        // When
+        let read_only = is_read_only_statement(statement);
+
+        // Then
+        assert!(!read_only);
     }
 
     #[test]

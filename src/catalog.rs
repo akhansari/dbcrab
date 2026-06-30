@@ -42,6 +42,15 @@ impl Catalog {
             true
         };
 
+        Self::load_with_columns(pool, should_load_columns).await
+    }
+
+    pub async fn load_unattended(pool: &PgPool) -> AppResult<Self> {
+        let relation_count = relation_count(pool).await?;
+        Self::load_with_columns(pool, !should_confirm_metadata(relation_count)).await
+    }
+
+    async fn load_with_columns(pool: &PgPool, should_load_columns: bool) -> AppResult<Self> {
         let schemas = load_schemas(pool).await?;
         let tables = load_tables(pool).await?;
         let columns = if should_load_columns {

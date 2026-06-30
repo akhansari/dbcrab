@@ -13,6 +13,23 @@ pub enum AppError {
     Message(String),
 }
 
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct QueryErrorDetails {
+    pub severity: String,
+    pub sqlstate: String,
+    pub message: String,
+    pub detail: Option<String>,
+    pub hint: Option<String>,
+    pub friendly_hint: Option<String>,
+    pub position: Option<QueryErrorPosition>,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub struct QueryErrorPosition {
+    pub line: usize,
+    pub column: usize,
+}
+
 impl AppError {
     pub fn message(message: impl Into<String>) -> Self {
         Self::Message(message.into())
@@ -86,6 +103,24 @@ pub fn format_query_error(
     lines.join("\n")
 }
 
+pub fn query_error_details(
+    err: &sqlx::Error,
+    sql: Option<&str>,
+    catalog: Option<&Catalog>,
+) -> Option<QueryErrorDetails> {
+    let pg = pg_error(err)?;
+
+    Some(QueryErrorDetails {
+        severity: format!("{:?}", pg.severity()).to_ascii_lowercase(),
+        sqlstate: pg.code().to_owned(),
+        message: pg.message().to_owned(),
+        detail: pg.detail().map(str::to_owned),
+        hint: pg.hint().map(str::to_owned),
+        friendly_hint: friendly_hint(pg, catalog),
+        position: sql.and_then(|query| error_position(query, pg.position())),
+    })
+}
+
 fn pg_error(err: &sqlx::Error) -> Option<&PgDatabaseError> {
     err.as_database_error()
         .and_then(|db| db.as_error().downcast_ref::<PgDatabaseError>())
@@ -129,10 +164,7 @@ fn first_quoted_fragment(message: &str) -> Option<String> {
 }
 
 pub fn error_caret(sql: &str, position: Option<PgErrorPosition<'_>>) -> Option<String> {
-    let position = match position? {
-        PgErrorPosition::Original(position) => position,
-        PgErrorPosition::Internal { .. } => return None,
-    };
+    let position = original_error_position(position)?;
 
     let target = position.saturating_sub(1);
     let mut char_index = 0;
@@ -149,6 +181,35 @@ pub fn error_caret(sql: &str, position: Option<PgErrorPosition<'_>>) -> Option<S
     None
 }
 
+pub fn error_position(
+    sql: &str,
+    position: Option<PgErrorPosition<'_>>,
+) -> Option<QueryErrorPosition> {
+    let position = original_error_position(position)?;
+    let target = position.saturating_sub(1);
+    let mut char_index = 0;
+
+    for (line_index, line) in sql.lines().enumerate() {
+        let line_len = line.chars().count();
+        if target <= char_index + line_len {
+            return Some(QueryErrorPosition {
+                line: line_index + 1,
+                column: target.saturating_sub(char_index) + 1,
+            });
+        }
+        char_index += line_len + 1;
+    }
+
+    None
+}
+
+fn original_error_position(position: Option<PgErrorPosition<'_>>) -> Option<usize> {
+    match position? {
+        PgErrorPosition::Original(position) => Some(position),
+        PgErrorPosition::Internal { .. } => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -163,6 +224,18 @@ mod tests {
 
         // Then
         assert_eq!(caret.as_deref(), Some("from missing\n     ^"));
+    }
+
+    #[test]
+    fn error_position_returns_line_and_column() {
+        // Given
+        let sql = "select *\nfrom missing";
+
+        // When
+        let position = error_position(sql, Some(PgErrorPosition::Original(15)));
+
+        // Then
+        assert_eq!(position, Some(QueryErrorPosition { line: 2, column: 6 }));
     }
 
     #[test]

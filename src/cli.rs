@@ -1,16 +1,32 @@
 use std::path::PathBuf;
 
-use clap::{Arg, ArgAction, Command};
+use clap::{Arg, ArgAction, Command, value_parser};
+
+use crate::agent::{AgentFormat, AgentOptions, DEFAULT_MAX_ROWS, DEFAULT_STATEMENT_TIMEOUT};
 
 pub enum Cli {
     Run(Args),
     PrintDefaultKeybindings,
+    PrintAgentGuide,
 }
 
 pub struct Args {
     pub connection: String,
     pub config: Option<PathBuf>,
     pub history_context: Option<String>,
+    pub mode: RunMode,
+}
+
+pub enum RunMode {
+    Interactive,
+    Execute {
+        sql: String,
+        options: AgentOptions,
+    },
+    Command {
+        command: String,
+        options: AgentOptions,
+    },
 }
 
 pub fn parse() -> Cli {
@@ -29,6 +45,14 @@ where
             Arg::new("default-keybindings")
                 .long("default-keybindings")
                 .help("Print the default keybinding configuration and exit")
+                .conflicts_with_all(["agent-guide", "execute", "command"])
+                .action(ArgAction::SetTrue),
+        )
+        .arg(
+            Arg::new("agent-guide")
+                .long("agent-guide")
+                .help("Print a compact prompt for coding agents and exit")
+                .conflicts_with_all(["default-keybindings", "execute", "command"])
                 .action(ArgAction::SetTrue),
         )
         .arg(
@@ -45,15 +69,68 @@ where
                 .value_name("NAME"),
         )
         .arg(
+            Arg::new("execute")
+                .short('e')
+                .long("execute")
+                .help("Run one SQL statement non-interactively")
+                .value_name("SQL")
+                .conflicts_with("command"),
+        )
+        .arg(
+            Arg::new("command")
+                .short(':')
+                .long("command")
+                .help("Run one DBCrab meta-command non-interactively")
+                .value_name("COMMAND")
+                .conflicts_with("execute"),
+        )
+        .arg(
+            Arg::new("format")
+                .long("format")
+                .help("Output format for non-interactive agent commands")
+                .value_name("FORMAT")
+                .value_parser(["compact", "column-json"])
+                .default_value("compact"),
+        )
+        .arg(
+            Arg::new("max-rows")
+                .long("max-rows")
+                .help("Maximum rows returned by non-interactive agent output")
+                .value_name("ROWS")
+                .value_parser(value_parser!(usize))
+                .default_value("100"),
+        )
+        .arg(
+            Arg::new("statement-timeout")
+                .long("statement-timeout")
+                .help("PostgreSQL statement_timeout for non-interactive SQL")
+                .value_name("TIMEOUT")
+                .default_value(DEFAULT_STATEMENT_TIMEOUT),
+        )
+        .arg(
+            Arg::new("allow-write")
+                .long("allow-write")
+                .help("Allow mutating SQL in non-interactive --execute mode")
+                .action(ArgAction::SetTrue),
+        )
+        .arg(
             Arg::new("connection")
                 .help("PostgreSQL connection string, for example postgres://user@localhost/db")
-                .required_unless_present("default-keybindings")
+                .required_unless_present_any(["default-keybindings", "agent-guide"])
                 .index(1),
         )
         .get_matches_from(args);
 
     if matches.get_flag("default-keybindings") {
         return Cli::PrintDefaultKeybindings;
+    }
+    let format = matches
+        .get_one::<String>("format")
+        .and_then(|value| AgentFormat::parse(value))
+        .unwrap_or(AgentFormat::Compact);
+
+    if matches.get_flag("agent-guide") {
+        return Cli::PrintAgentGuide;
     }
 
     let connection = matches
@@ -62,12 +139,43 @@ where
         .to_owned();
     let config = matches.get_one::<String>("config").map(PathBuf::from);
     let history_context = matches.get_one::<String>("context").cloned();
+    let agent_options = agent_options(&matches, format);
+    let mode = if let Some(sql) = matches.get_one::<String>("execute") {
+        RunMode::Execute {
+            sql: sql.to_owned(),
+            options: agent_options,
+        }
+    } else if let Some(command) = matches.get_one::<String>("command") {
+        RunMode::Command {
+            command: command.to_owned(),
+            options: agent_options,
+        }
+    } else {
+        RunMode::Interactive
+    };
 
     Cli::Run(Args {
         connection,
         config,
         history_context,
+        mode,
     })
+}
+
+fn agent_options(matches: &clap::ArgMatches, format: AgentFormat) -> AgentOptions {
+    AgentOptions {
+        format,
+        max_rows: matches
+            .get_one::<usize>("max-rows")
+            .copied()
+            .filter(|value| *value > 0)
+            .unwrap_or(DEFAULT_MAX_ROWS),
+        read_only: !matches.get_flag("allow-write"),
+        statement_timeout: matches
+            .get_one::<String>("statement-timeout")
+            .cloned()
+            .unwrap_or_else(|| DEFAULT_STATEMENT_TIMEOUT.to_owned()),
+    }
 }
 
 #[cfg(test)]
@@ -86,6 +194,130 @@ mod tests {
         match cli {
             Cli::Run(args) => assert_eq!(args.history_context, Some("app".to_owned())),
             Cli::PrintDefaultKeybindings => panic!("expected run args"),
+            Cli::PrintAgentGuide => panic!("expected run args"),
+        }
+    }
+
+    #[test]
+    fn execute_option_sets_agent_execute_mode() {
+        // Given
+        let args = [
+            "dbcrab",
+            "postgres://localhost/app",
+            "--execute",
+            "select 1",
+            "--format",
+            "column-json",
+            "--max-rows",
+            "5",
+        ];
+
+        // When
+        let cli = parse_from(args);
+
+        // Then
+        match cli {
+            Cli::Run(args) => match args.mode {
+                RunMode::Execute { sql, options } => {
+                    assert_eq!(sql, "select 1");
+                    assert_eq!(options.format, AgentFormat::ColumnJson);
+                    assert_eq!(options.max_rows, 5);
+                    assert!(options.read_only);
+                }
+                RunMode::Interactive | RunMode::Command { .. } => panic!("expected execute mode"),
+            },
+            Cli::PrintDefaultKeybindings | Cli::PrintAgentGuide => {
+                panic!("expected run args")
+            }
+        }
+    }
+
+    #[test]
+    fn execute_short_option_sets_agent_execute_mode() {
+        // Given
+        let args = ["dbcrab", "postgres://localhost/app", "-e", "select 1"];
+
+        // When
+        let cli = parse_from(args);
+
+        // Then
+        match cli {
+            Cli::Run(args) => match args.mode {
+                RunMode::Execute { sql, options } => {
+                    assert_eq!(sql, "select 1");
+                    assert_eq!(options.format, AgentFormat::Compact);
+                }
+                RunMode::Interactive | RunMode::Command { .. } => panic!("expected execute mode"),
+            },
+            Cli::PrintDefaultKeybindings | Cli::PrintAgentGuide => {
+                panic!("expected run args")
+            }
+        }
+    }
+
+    #[test]
+    fn command_option_sets_agent_command_mode() {
+        // Given
+        let args = [
+            "dbcrab",
+            "postgres://localhost/app",
+            "--command",
+            "describe users",
+        ];
+
+        // When
+        let cli = parse_from(args);
+
+        // Then
+        match cli {
+            Cli::Run(args) => match args.mode {
+                RunMode::Command { command, options } => {
+                    assert_eq!(command, "describe users");
+                    assert_eq!(options.format, AgentFormat::Compact);
+                }
+                RunMode::Interactive | RunMode::Execute { .. } => panic!("expected command mode"),
+            },
+            Cli::PrintDefaultKeybindings | Cli::PrintAgentGuide => {
+                panic!("expected run args")
+            }
+        }
+    }
+
+    #[test]
+    fn command_short_option_sets_agent_command_mode() {
+        // Given
+        let args = ["dbcrab", "postgres://localhost/app", "-:", "describe users"];
+
+        // When
+        let cli = parse_from(args);
+
+        // Then
+        match cli {
+            Cli::Run(args) => match args.mode {
+                RunMode::Command { command, options } => {
+                    assert_eq!(command, "describe users");
+                    assert_eq!(options.format, AgentFormat::Compact);
+                }
+                RunMode::Interactive | RunMode::Execute { .. } => panic!("expected command mode"),
+            },
+            Cli::PrintDefaultKeybindings | Cli::PrintAgentGuide => {
+                panic!("expected run args")
+            }
+        }
+    }
+
+    #[test]
+    fn agent_guide_option_does_not_require_connection() {
+        // Given
+        let args = ["dbcrab", "--agent-guide"];
+
+        // When
+        let cli = parse_from(args);
+
+        // Then
+        match cli {
+            Cli::PrintAgentGuide => {}
+            Cli::Run(_) | Cli::PrintDefaultKeybindings => panic!("expected agent guide output"),
         }
     }
 }

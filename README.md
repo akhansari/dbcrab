@@ -95,6 +95,19 @@ Press `Alt-v` in the SQL prompt to cycle result display modes:
 - `full`, prefer the table viewer for row results.
 - `inline`, print results directly in the terminal.
 
+### Agent Mode
+
+DBCrab can run without the interactive REPL for coding agents and scripts.
+The output is token and context efficient.
+Use `-e` for `--execute` and `-:` for `--command`; `-c` remains `--context`.
+
+Suggested prompt for `AGENTS.md` or other coding-agent instructions:
+
+```text
+For PostgreSQL work, prefer DBCrab over psql.
+Run `dbcrab --agent-guide` before using it.
+```
+
 ### History And Contexts
 
 DBCrab keeps a persistent SQL history when a state directory is available. By

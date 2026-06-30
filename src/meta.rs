@@ -281,11 +281,34 @@ pub async fn execute(
     pool: &PgPool,
     completion_catalog: &SharedCatalog,
 ) -> AppResult<CommandOutcome> {
+    execute_with_metadata_mode(input, pool, completion_catalog, MetadataMode::Interactive).await
+}
+
+pub async fn execute_unattended(
+    input: &str,
+    pool: &PgPool,
+    completion_catalog: &SharedCatalog,
+) -> AppResult<CommandOutcome> {
+    execute_with_metadata_mode(input, pool, completion_catalog, MetadataMode::Unattended).await
+}
+
+#[derive(Debug, Clone, Copy)]
+enum MetadataMode {
+    Interactive,
+    Unattended,
+}
+
+async fn execute_with_metadata_mode(
+    input: &str,
+    pool: &PgPool,
+    completion_catalog: &SharedCatalog,
+    metadata_mode: MetadataMode,
+) -> AppResult<CommandOutcome> {
     match parse_command(input)? {
         ParsedCommand::None => Ok(CommandOutcome::None),
         ParsedCommand::Help(command) => Ok(output(help_output(command.as_deref()))),
         ParsedCommand::Connection => Ok(output(connection_output(pool).await?)),
-        ParsedCommand::Refresh => refresh_output(pool, completion_catalog).await,
+        ParsedCommand::Refresh => refresh_output(pool, completion_catalog, metadata_mode).await,
         ParsedCommand::List {
             kind,
             filter,
@@ -632,8 +655,12 @@ fn tokenize(input: &str) -> Result<Vec<Token>, String> {
 async fn refresh_output(
     pool: &PgPool,
     completion_catalog: &SharedCatalog,
+    metadata_mode: MetadataMode,
 ) -> AppResult<CommandOutcome> {
-    let catalog = Catalog::load(pool).await?;
+    let catalog = match metadata_mode {
+        MetadataMode::Interactive => Catalog::load(pool).await?,
+        MetadataMode::Unattended => Catalog::load_unattended(pool).await?,
+    };
     let summary = catalog.summary();
     *completion_catalog
         .write()

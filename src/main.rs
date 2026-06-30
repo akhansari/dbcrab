@@ -1,3 +1,4 @@
+mod agent;
 mod catalog;
 mod cli;
 mod completion;
@@ -13,7 +14,7 @@ mod sql;
 mod tui;
 mod validator;
 
-use errors::AppResult;
+use errors::{AppError, AppResult};
 
 fn main() {
     let result = tokio::runtime::Builder::new_multi_thread()
@@ -22,37 +23,104 @@ fn main() {
         .map_err(errors::AppError::from)
         .and_then(|runtime| runtime.block_on(run()));
 
-    if let Err(err) = result {
-        eprintln!("{err}");
-        std::process::exit(1);
+    match result {
+        Ok(0) => {}
+        Ok(code) => std::process::exit(code),
+        Err(err) => {
+            eprintln!("{err}");
+            std::process::exit(1);
+        }
     }
 }
 
-async fn run() -> AppResult<()> {
+async fn run() -> AppResult<i32> {
     let cli = cli::parse();
     let args = match cli {
         cli::Cli::Run(args) => args,
         cli::Cli::PrintDefaultKeybindings => {
             print!("{}", config::DEFAULT_KEYBINDINGS_TOML);
-            return Ok(());
+            return Ok(0);
+        }
+        cli::Cli::PrintAgentGuide => {
+            print!("{}", agent::agent_guide());
+            return Ok(0);
         }
     };
-    let config = config::load(args.config)?;
+    let mode = args.mode;
+    let interactive = matches!(mode, cli::RunMode::Interactive);
+    let config = if interactive {
+        Some(config::load(args.config)?)
+    } else {
+        None
+    };
 
-    println!("Connecting...");
+    print_status(interactive, "Connecting...");
     let pool = connection::connect(&args.connection).await?;
 
-    println!("Connected. Loading metadata...");
-    let catalog = catalog::Catalog::load(&pool).await?;
-    println!("Loaded {}.", catalog.summary());
+    print_status(interactive, "Connected. Loading metadata...");
+    let catalog = if interactive {
+        catalog::Catalog::load(&pool).await?
+    } else {
+        catalog::Catalog::load_unattended(&pool).await?
+    };
+    print_status(interactive, &format!("Loaded {}.", catalog.summary()));
     let catalog = catalog::shared_catalog(catalog);
 
-    repl::run(
-        pool,
-        catalog,
-        config.edit_mode,
-        config.keybindings,
-        args.history_context,
-    )
-    .await
+    match mode {
+        cli::RunMode::Interactive => {
+            let config = config.expect("interactive mode loads config");
+            repl::run(
+                pool,
+                catalog,
+                config.edit_mode,
+                config.keybindings,
+                args.history_context,
+            )
+            .await?;
+            Ok(0)
+        }
+        cli::RunMode::Execute { sql, options } => {
+            match agent::execute_sql(&pool, &sql, &options).await {
+                Ok(output) => {
+                    print!("{}", agent::render_output(&output, &options));
+                    Ok(0)
+                }
+                Err(err) => {
+                    print_agent_error(&err, Some(&sql), &catalog, options.format);
+                    Ok(1)
+                }
+            }
+        }
+        cli::RunMode::Command { command, options } => {
+            match agent::execute_command(&pool, &catalog, &command).await {
+                Ok(output) => {
+                    print!("{}", agent::render_output(&output, &options));
+                    Ok(0)
+                }
+                Err(err) => {
+                    print_agent_error(&err, Some(&command), &catalog, options.format);
+                    Ok(1)
+                }
+            }
+        }
+    }
+}
+
+fn print_status(interactive: bool, message: &str) {
+    if interactive {
+        println!("{message}");
+    }
+}
+
+fn print_agent_error(
+    err: &AppError,
+    statement: Option<&str>,
+    catalog: &catalog::SharedCatalog,
+    format: agent::AgentFormat,
+) {
+    let rendered = catalog.read().map_or_else(
+        |_| agent::render_error(err, statement, None, format),
+        |catalog| agent::render_error(err, statement, Some(&catalog), format),
+    );
+    print!("{rendered}");
 }

@@ -162,6 +162,10 @@ impl ResultGrid {
         &self.columns
     }
 
+    pub fn column_types(&self) -> &[String] {
+        &self.column_types
+    }
+
     pub fn rows(&self) -> &[Vec<CellValue>] {
         &self.rows
     }
