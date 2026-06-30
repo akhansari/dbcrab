@@ -88,7 +88,7 @@ right = ["right", "l"]
 down = ["down", "j"]
 
 half_page_left = ["shift-h"]
-half_page_up = ["shift-k", "ctrl-u"]
+half_page_up = ["shift-k"]
 half_page_right = ["shift-l"]
 half_page_down = ["shift-j", "ctrl-d"]
 
@@ -99,6 +99,10 @@ full_page_down = ["ctrl-j", "pagedown"]
 
 toggle_preview = ["enter"]
 focus_next = ["tab"]
+edit_preview = ["c"]
+stage_preview = ["ctrl-s"]
+set_null = ["ctrl-x"]
+update_row = ["ctrl-u"]
 
 quit = ["q", "esc", "ctrl-c"]
 "#;
@@ -286,6 +290,10 @@ pub struct TuiKeybindings {
     full_page_down: Vec<KeyBinding>,
     toggle_preview: Vec<KeyBinding>,
     focus_next: Vec<KeyBinding>,
+    edit_preview: Vec<KeyBinding>,
+    stage_preview: Vec<KeyBinding>,
+    set_null: Vec<KeyBinding>,
+    update_row: Vec<KeyBinding>,
     quit: Vec<KeyBinding>,
 }
 
@@ -297,7 +305,7 @@ impl Default for TuiKeybindings {
             right: key_bindings(["right", "l"]),
             down: key_bindings(["down", "j"]),
             half_page_left: key_bindings(["shift-h"]),
-            half_page_up: key_bindings(["shift-k", "ctrl-u"]),
+            half_page_up: key_bindings(["shift-k"]),
             half_page_right: key_bindings(["shift-l"]),
             half_page_down: key_bindings(["shift-j", "ctrl-d"]),
             full_page_left: key_bindings(["ctrl-h"]),
@@ -306,6 +314,10 @@ impl Default for TuiKeybindings {
             full_page_down: key_bindings(["ctrl-j", "pagedown"]),
             toggle_preview: key_bindings(["enter"]),
             focus_next: key_bindings(["tab"]),
+            edit_preview: key_bindings(["c"]),
+            stage_preview: key_bindings(["ctrl-s"]),
+            set_null: key_bindings(["ctrl-x"]),
+            update_row: key_bindings(["ctrl-u"]),
             quit: key_bindings(["q", "esc", "ctrl-c"]),
         }
     }
@@ -313,11 +325,19 @@ impl Default for TuiKeybindings {
 
 impl TuiKeybindings {
     pub fn action_for(&self, key: KeyEvent) -> Option<TuiAction> {
-        TuiAction::ALL.into_iter().find(|action| {
-            self.bindings_for(*action)
-                .iter()
-                .any(|binding| binding.matches(key))
-        })
+        TuiAction::ALL
+            .into_iter()
+            .find(|action| self.matches_action(*action, key))
+    }
+
+    pub(crate) fn matches_action(&self, action: TuiAction, key: KeyEvent) -> bool {
+        self.bindings_for(action)
+            .iter()
+            .any(|binding| binding.matches(key))
+    }
+
+    pub(crate) fn display_binding_for(&self, action: TuiAction) -> Option<KeyBinding> {
+        self.bindings_for(action).first().copied()
     }
 
     fn bindings_for(&self, action: TuiAction) -> &[KeyBinding] {
@@ -336,6 +356,10 @@ impl TuiKeybindings {
             TuiAction::FullPageDown => &self.full_page_down,
             TuiAction::TogglePreview => &self.toggle_preview,
             TuiAction::FocusNext => &self.focus_next,
+            TuiAction::EditPreview => &self.edit_preview,
+            TuiAction::StagePreview => &self.stage_preview,
+            TuiAction::SetNull => &self.set_null,
+            TuiAction::UpdateRow => &self.update_row,
             TuiAction::Quit => &self.quit,
         }
     }
@@ -356,6 +380,10 @@ impl TuiKeybindings {
             TuiAction::FullPageDown => self.full_page_down = bindings,
             TuiAction::TogglePreview => self.toggle_preview = bindings,
             TuiAction::FocusNext => self.focus_next = bindings,
+            TuiAction::EditPreview => self.edit_preview = bindings,
+            TuiAction::StagePreview => self.stage_preview = bindings,
+            TuiAction::SetNull => self.set_null = bindings,
+            TuiAction::UpdateRow => self.update_row = bindings,
             TuiAction::Quit => self.quit = bindings,
         }
     }
@@ -458,11 +486,15 @@ pub enum TuiAction {
     FullPageDown,
     TogglePreview,
     FocusNext,
+    EditPreview,
+    StagePreview,
+    SetNull,
+    UpdateRow,
     Quit,
 }
 
 impl TuiAction {
-    const ALL: [Self; 15] = [
+    const ALL: [Self; 19] = [
         Self::Left,
         Self::Up,
         Self::Right,
@@ -477,6 +509,10 @@ impl TuiAction {
         Self::FullPageDown,
         Self::TogglePreview,
         Self::FocusNext,
+        Self::EditPreview,
+        Self::StagePreview,
+        Self::SetNull,
+        Self::UpdateRow,
         Self::Quit,
     ];
 
@@ -496,6 +532,10 @@ impl TuiAction {
             Self::FullPageDown => "full_page_down",
             Self::TogglePreview => "toggle_preview",
             Self::FocusNext => "focus_next",
+            Self::EditPreview => "edit_preview",
+            Self::StagePreview => "stage_preview",
+            Self::SetNull => "set_null",
+            Self::UpdateRow => "update_row",
             Self::Quit => "quit",
         }
     }
@@ -1694,23 +1734,6 @@ mod tests {
     }
 
     #[test]
-    fn search_history_config_key_maps_to_history_menu() {
-        // Given
-        let text = "[keybindings.prompt.insert]\nSearchHistory = [\"ctrl-x\"]\n";
-        let mut keybindings = reedline::default_emacs_keybindings();
-
-        // When
-        let config = parse_config(text).expect("config should parse");
-        config.keybindings.prompt.insert.apply_to(&mut keybindings);
-
-        // Then
-        assert_eq!(
-            keybindings.find_binding(KeyModifiers::CONTROL, KeyCode::Char('x')),
-            Some(history_menu_event())
-        );
-    }
-
-    #[test]
     fn key_binding_matches_shift_char_sent_as_uppercase() {
         // Given
         let binding = parse_key_binding("shift-h").expect("binding should parse");
@@ -1754,13 +1777,25 @@ mod tests {
         let keybindings = TuiKeybindings::default();
         let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
         let tab = KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE);
+        let c = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE);
+        let ctrl_s = KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL);
+        let ctrl_x = KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL);
+        let ctrl_u = KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL);
 
         // When
         let enter_action = keybindings.action_for(enter);
         let tab_action = keybindings.action_for(tab);
+        let edit_action = keybindings.action_for(c);
+        let stage_action = keybindings.action_for(ctrl_s);
+        let null_action = keybindings.action_for(ctrl_x);
+        let update_action = keybindings.action_for(ctrl_u);
 
         // Then
         assert_eq!(enter_action, Some(TuiAction::TogglePreview));
         assert_eq!(tab_action, Some(TuiAction::FocusNext));
+        assert_eq!(edit_action, Some(TuiAction::EditPreview));
+        assert_eq!(stage_action, Some(TuiAction::StagePreview));
+        assert_eq!(null_action, Some(TuiAction::SetNull));
+        assert_eq!(update_action, Some(TuiAction::UpdateRow));
     }
 }

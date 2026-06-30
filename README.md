@@ -4,9 +4,13 @@ DBCrab is a modern REPL-first PostgreSQL client.
 
 ## Quick Start
 
+Installation:
+
+- Local: `cargo install --path .`
+
 Start DBCrab with a PostgreSQL connection string:
 
-```bash
+```sh
 dbcrab postgres://user@localhost/database
 ```
 
@@ -99,7 +103,7 @@ default, history is stored under your user state directory.
 Use a named history context when you want separate histories for different
 projects or databases:
 
-```bash
+```sh
 dbcrab postgres://user@localhost/app -c my_app
 ```
 
@@ -110,7 +114,7 @@ directory. Use `--config PATH` to load a specific file.
 
 Print the default keybinding configuration with:
 
-```bash
+```sh
 dbcrab --default-keybindings
 ```
 
@@ -139,7 +143,7 @@ command_mode = [":"]
 
 [keybindings.prompt.insert]
 ClearScreen = ["ctrl-l"]
-SearchHistory = ["ctrl-r"]
+HistoryMenu = ["ctrl-r"]
 
 [keybindings.prompt.vi_normal]
 # Reedline's built-in vi grammar still handles h/j/k/l, w, b, d, c, y, etc.
@@ -153,6 +157,10 @@ left = ["left", "h"]
 up = ["up", "k"]
 right = ["right", "l"]
 down = ["down", "j"]
+edit_preview = ["c"]
+stage_preview = ["ctrl-s"]
+set_null = ["ctrl-x"]
+update_row = ["ctrl-u"]
 quit.add = ["q"]
 ```
 

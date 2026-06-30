@@ -1,11 +1,12 @@
 use nu_ansi_term::{Color, Style as AnsiStyle};
 use std::{
+    collections::HashMap,
     io::{self, IsTerminal},
     sync::{Arc, Mutex},
 };
 
 use crossterm::terminal;
-use sqlx::{Column, Row, TypeInfo, postgres::PgRow};
+use sqlx::{AssertSqlSafe, Column, PgPool, Row, TypeInfo, postgres::PgRow};
 use tabled::{
     builder::Builder,
     settings::{
@@ -28,14 +29,79 @@ const INLINE_TABLE_OVERHEAD_ROWS: usize = 4;
 pub struct ResultGrid {
     columns: Vec<String>,
     column_types: Vec<String>,
-    rows: Vec<Vec<String>>,
+    column_origins: Vec<Option<ColumnOrigin>>,
+    column_update_info: Vec<Option<ColumnUpdateInfo>>,
+    rows: Vec<Vec<CellValue>>,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub enum CellValue {
+    Null,
+    Text(String),
+}
+
+#[derive(Debug, Clone, Copy, Eq, Hash, PartialEq)]
+pub struct ColumnOrigin {
+    pub relation_id: i64,
+    pub attribute_no: i16,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct ColumnUpdateInfo {
+    pub relation_id: i64,
+    pub relation_schema: String,
+    pub relation_name: String,
+    pub attribute_no: i16,
+    pub column_name: String,
+    pub data_type: String,
+    pub nullable: bool,
+    pub primary_key: bool,
+    pub primary_key_attributes: Vec<i16>,
+}
+
+impl CellValue {
+    pub fn display(&self) -> &str {
+        match self {
+            Self::Null => "(null)",
+            Self::Text(value) => value,
+        }
+    }
+
+    pub fn as_text(&self) -> Option<&str> {
+        match self {
+            Self::Null => None,
+            Self::Text(value) => Some(value),
+        }
+    }
 }
 
 impl ResultGrid {
     pub fn new(columns: Vec<String>, column_types: Vec<String>, rows: Vec<Vec<String>>) -> Self {
+        let column_count = columns.len();
         Self {
             columns,
             column_types,
+            column_origins: vec![None; column_count],
+            column_update_info: vec![None; column_count],
+            rows: rows
+                .into_iter()
+                .map(|row| row.into_iter().map(CellValue::Text).collect())
+                .collect(),
+        }
+    }
+
+    pub fn from_cells(
+        columns: Vec<String>,
+        column_types: Vec<String>,
+        column_origins: Vec<Option<ColumnOrigin>>,
+        rows: Vec<Vec<CellValue>>,
+    ) -> Self {
+        let column_count = columns.len();
+        Self {
+            columns,
+            column_types,
+            column_origins,
+            column_update_info: vec![None; column_count],
             rows,
         }
     }
@@ -54,6 +120,15 @@ impl ResultGrid {
             .iter()
             .map(|column| column.type_info().name().to_owned())
             .collect::<Vec<_>>();
+        let column_origins = columns
+            .iter()
+            .map(|column| {
+                Some(ColumnOrigin {
+                    relation_id: i64::from(column.relation_id()?.0),
+                    attribute_no: column.relation_attribute_no()?,
+                })
+            })
+            .collect::<Vec<_>>();
 
         let rows = rows
             .iter()
@@ -61,12 +136,12 @@ impl ResultGrid {
                 row.columns()
                     .iter()
                     .enumerate()
-                    .map(|(index, column)| render_cell(row, index, column.type_info().name()))
+                    .map(|(index, column)| render_cell_value(row, index, column.type_info().name()))
                     .collect::<Vec<_>>()
             })
             .collect::<Vec<_>>();
 
-        Self::new(column_names, column_types, rows)
+        Self::from_cells(column_names, column_types, column_origins, rows)
     }
 
     pub fn from_records(
@@ -87,8 +162,46 @@ impl ResultGrid {
         &self.columns
     }
 
-    pub fn rows(&self) -> &[Vec<String>] {
+    pub fn rows(&self) -> &[Vec<CellValue>] {
         &self.rows
+    }
+
+    pub fn column_update_info(&self, index: usize) -> Option<&ColumnUpdateInfo> {
+        self.column_update_info.get(index).and_then(Option::as_ref)
+    }
+
+    pub fn primary_key_columns_for_relation(&self, relation_id: i64) -> Option<Vec<usize>> {
+        let primary_key_attributes = self
+            .column_update_info
+            .iter()
+            .flatten()
+            .find(|info| info.relation_id == relation_id)?
+            .primary_key_attributes
+            .clone();
+
+        if primary_key_attributes.is_empty() {
+            return None;
+        }
+
+        primary_key_attributes
+            .into_iter()
+            .map(|attribute_no| {
+                self.column_update_info.iter().position(|info| {
+                    info.as_ref().is_some_and(|info| {
+                        info.relation_id == relation_id && info.attribute_no == attribute_no
+                    })
+                })
+            })
+            .collect()
+    }
+
+    pub fn is_column_editable(&self, index: usize) -> bool {
+        self.column_update_info(index).is_some_and(|info| {
+            !info.primary_key
+                && self
+                    .primary_key_columns_for_relation(info.relation_id)
+                    .is_some()
+        })
     }
 
     pub fn column_type(&self, index: usize) -> Option<&str> {
@@ -96,10 +209,17 @@ impl ResultGrid {
     }
 
     pub fn cell(&self, row: usize, column: usize) -> Option<&str> {
-        self.rows
-            .get(row)
-            .and_then(|row| row.get(column))
-            .map(String::as_str)
+        self.cell_value(row, column).map(CellValue::display)
+    }
+
+    pub fn cell_value(&self, row: usize, column: usize) -> Option<&CellValue> {
+        self.rows.get(row).and_then(|row| row.get(column))
+    }
+
+    pub fn set_cell_value(&mut self, row: usize, column: usize, value: CellValue) {
+        if let Some(cell) = self.rows.get_mut(row).and_then(|row| row.get_mut(column)) {
+            *cell = value;
+        }
     }
 
     pub fn row_count(&self) -> usize {
@@ -109,6 +229,105 @@ impl ResultGrid {
     pub fn column_count(&self) -> usize {
         self.columns.len()
     }
+
+    pub async fn load_update_metadata(&mut self, pool: &PgPool) -> Result<(), sqlx::Error> {
+        let relation_ids = relation_ids(&self.column_origins);
+        if relation_ids.is_empty() {
+            return Ok(());
+        }
+
+        let rows = sqlx::query(AssertSqlSafe(UPDATE_METADATA_SQL.to_owned()))
+            .bind(&relation_ids)
+            .fetch_all(pool)
+            .await?;
+        let metadata = rows
+            .into_iter()
+            .map(|row| {
+                Ok((
+                    (
+                        row.try_get::<i64, _>("relation_id")?,
+                        row.try_get::<i16, _>("attribute_no")?,
+                    ),
+                    ColumnUpdateInfo {
+                        relation_id: row.try_get("relation_id")?,
+                        relation_schema: row.try_get("relation_schema")?,
+                        relation_name: row.try_get("relation_name")?,
+                        attribute_no: row.try_get("attribute_no")?,
+                        column_name: row.try_get("column_name")?,
+                        data_type: row.try_get("data_type")?,
+                        nullable: row.try_get("nullable")?,
+                        primary_key: row.try_get("primary_key")?,
+                        primary_key_attributes: row.try_get("primary_key_attributes")?,
+                    },
+                ))
+            })
+            .collect::<Result<HashMap<_, _>, sqlx::Error>>()?;
+
+        self.column_update_info = self
+            .column_origins
+            .iter()
+            .map(|origin| {
+                origin.and_then(|origin| {
+                    metadata
+                        .get(&(origin.relation_id, origin.attribute_no))
+                        .cloned()
+                })
+            })
+            .collect();
+
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_column_update_info(
+        mut self,
+        column_update_info: Vec<Option<ColumnUpdateInfo>>,
+    ) -> Self {
+        self.column_update_info = column_update_info;
+        self
+    }
+}
+
+const UPDATE_METADATA_SQL: &str = r#"
+select c.oid::bigint as relation_id,
+       n.nspname as relation_schema,
+       c.relname as relation_name,
+       a.attnum::int2 as attribute_no,
+       a.attname as column_name,
+       pg_catalog.format_type(a.atttypid, a.atttypmod) as data_type,
+       not a.attnotnull as nullable,
+       exists (
+           select 1
+           from pg_catalog.pg_index i
+           where i.indrelid = c.oid
+             and i.indisprimary
+             and a.attnum = any(i.indkey)
+       ) as primary_key,
+       coalesce(pk.primary_key_attributes, array[]::int2[]) as primary_key_attributes
+from pg_catalog.pg_class c
+join pg_catalog.pg_namespace n on n.oid = c.relnamespace
+join pg_catalog.pg_attribute a on a.attrelid = c.oid
+left join lateral (
+    select array_agg(key.attnum::int2 order by key.ordinality) as primary_key_attributes
+    from pg_catalog.pg_index i
+    cross join lateral unnest(i.indkey) with ordinality as key(attnum, ordinality)
+    where i.indrelid = c.oid
+      and i.indisprimary
+) pk on true
+where c.oid::bigint = any($1::bigint[])
+  and c.relkind in ('r', 'p')
+  and a.attnum > 0
+  and not a.attisdropped
+"#;
+
+fn relation_ids(origins: &[Option<ColumnOrigin>]) -> Vec<i64> {
+    let mut relation_ids = Vec::new();
+    for relation_id in origins.iter().flatten().map(|origin| origin.relation_id) {
+        if !relation_ids.contains(&relation_id) {
+            relation_ids.push(relation_id);
+        }
+    }
+    relation_ids
 }
 
 pub enum RowsDisplay {
@@ -288,7 +507,7 @@ fn grid_builder(grid: &ResultGrid) -> Builder {
     builder.push_record(grid.columns().iter().cloned());
 
     for row in grid.rows() {
-        builder.push_record(row.iter().cloned());
+        builder.push_record(row.iter().map(|cell| cell.display().to_owned()));
     }
 
     builder
@@ -354,6 +573,12 @@ fn dim_border_color() -> TableColor {
 }
 
 fn render_cell(row: &PgRow, index: usize, type_name: &str) -> String {
+    render_cell_value(row, index, type_name)
+        .display()
+        .to_owned()
+}
+
+pub(crate) fn render_cell_value(row: &PgRow, index: usize, type_name: &str) -> CellValue {
     let type_name = type_name.to_ascii_lowercase();
     match type_name.as_str() {
         "bool" | "boolean" => decode(row, index, |value: bool| value.to_string()),
@@ -389,14 +614,18 @@ fn render_cell(row: &PgRow, index: usize, type_name: &str) -> String {
         }),
         "bytea" => decode(row, index, |value: Vec<u8>| format_bytes(&value)),
         unsupported => try_decode(row, index, |value: String| value)
-            .unwrap_or_else(|| format!("<{unsupported}>")),
+            .unwrap_or_else(|| CellValue::Text(format!("<{unsupported}>"))),
     }
 }
 
 fn render_expanded_cell(row: &PgRow, index: usize, type_name: &str) -> String {
     match type_name.to_ascii_lowercase().as_str() {
         "json" | "jsonb" => try_decode(row, index, format_json_value)
-            .unwrap_or_else(|| format!("<{}>", row.columns()[index].type_info().name())),
+            .unwrap_or_else(|| {
+                CellValue::Text(format!("<{}>", row.columns()[index].type_info().name()))
+            })
+            .display()
+            .to_owned(),
         _ => render_cell(row, index, type_name),
     }
 }
@@ -541,23 +770,24 @@ fn truncation_marker() -> String {
         .to_string()
 }
 
-fn decode<T, F>(row: &PgRow, index: usize, render: F) -> String
+fn decode<T, F>(row: &PgRow, index: usize, render: F) -> CellValue
 where
     for<'r> T: sqlx::Decode<'r, sqlx::Postgres> + sqlx::Type<sqlx::Postgres>,
     F: FnOnce(T) -> String,
 {
-    try_decode(row, index, render)
-        .unwrap_or_else(|| format!("<{}>", row.columns()[index].type_info().name()))
+    try_decode(row, index, render).unwrap_or_else(|| {
+        CellValue::Text(format!("<{}>", row.columns()[index].type_info().name()))
+    })
 }
 
-fn try_decode<T, F>(row: &PgRow, index: usize, render: F) -> Option<String>
+fn try_decode<T, F>(row: &PgRow, index: usize, render: F) -> Option<CellValue>
 where
     for<'r> T: sqlx::Decode<'r, sqlx::Postgres> + sqlx::Type<sqlx::Postgres>,
     F: FnOnce(T) -> String,
 {
     match row.try_get::<Option<T>, _>(index) {
-        Ok(Some(value)) => Some(render(value)),
-        Ok(None) => Some("(null)".to_owned()),
+        Ok(Some(value)) => Some(CellValue::Text(render(value))),
+        Ok(None) => Some(CellValue::Null),
         Err(_) => None,
     }
 }
@@ -953,6 +1183,42 @@ mod tests {
 
         // Then
         assert!(use_tui);
+    }
+
+    #[test]
+    fn live_text_document_select_star_has_edit_metadata_when_configured() {
+        // Given
+        let Ok(database_url) = std::env::var("DBCRAB_LIVE_DATABASE_URL") else {
+            return;
+        };
+        let runtime = tokio::runtime::Runtime::new().expect("tokio runtime should start");
+        let (mut grid, pool) = runtime.block_on(async {
+            let pool = PgPool::connect(&database_url)
+                .await
+                .expect("live database should connect");
+            let rows = sqlx::query(AssertSqlSafe(
+                "select * from text_document limit 1".to_owned(),
+            ))
+            .fetch_all(&pool)
+            .await
+            .expect("live query should return rows");
+            (ResultGrid::from_rows(&rows), pool)
+        });
+
+        // When
+        runtime.block_on(async {
+            grid.load_update_metadata(&pool)
+                .await
+                .expect("live metadata should load");
+        });
+
+        // Then
+        let content_column = grid
+            .columns()
+            .iter()
+            .position(|column| column == "content")
+            .expect("content column should be returned");
+        assert!(grid.is_column_editable(content_column));
     }
 
     #[test]

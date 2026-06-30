@@ -27,11 +27,11 @@ pub(super) async fn execute_statement(
             .fetch_all(pool)
             .await
         {
-            Ok(rows) => print_rows_display(
-                statement_rows_display(&rows, display_mode),
-                tui_keybindings,
-                key_remaps,
-            )?,
+            Ok(rows) => {
+                let display =
+                    add_update_metadata(statement_rows_display(&rows, display_mode), pool).await?;
+                print_rows_display(display, tui_keybindings, key_remaps, Some(pool)).await?;
+            }
             Err(err) => print_query_error(&err, statement, catalog),
         }
     } else {
@@ -64,6 +64,19 @@ fn statement_rows_display(rows: &[PgRow], display_mode: DisplayMode) -> RowsDisp
         DisplayMode::Inline => RowsDisplay::Inline(render_rows(rows)),
         DisplayMode::Full if rows.is_empty() => RowsDisplay::Inline(render_row_count(0)),
         DisplayMode::Full => RowsDisplay::Tui(ResultGrid::from_rows(rows)),
+    }
+}
+
+async fn add_update_metadata(
+    display: RowsDisplay,
+    pool: &PgPool,
+) -> Result<RowsDisplay, sqlx::Error> {
+    match display {
+        RowsDisplay::Tui(mut grid) => {
+            grid.load_update_metadata(pool).await?;
+            Ok(RowsDisplay::Tui(grid))
+        }
+        display => Ok(display),
     }
 }
 

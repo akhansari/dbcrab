@@ -222,7 +222,8 @@ async fn run_command_mode(
                 Ok(CommandOutcome::None) => {}
                 Ok(CommandOutcome::Exit) => return Ok(true),
                 Ok(CommandOutcome::Output(output)) => {
-                    render_meta_output(output, tui_keybindings, key_remaps, DisplayMode::Auto)?;
+                    render_meta_output(output, tui_keybindings, key_remaps, DisplayMode::Auto)
+                        .await?;
                 }
                 Err(err) => eprintln!("{err}"),
             },

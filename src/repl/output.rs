@@ -5,10 +5,11 @@ use crate::{
     errors::AppResult,
     meta,
     render::{DisplayMode, ResultGrid, RowsDisplay, grid_display, render_grid, render_row_count},
-    tui::show_result_grid,
+    tui::{show_result_grid, show_result_grid_with_updates},
 };
+use sqlx::PgPool;
 
-pub(super) fn render_meta_output(
+pub(super) async fn render_meta_output(
     output: meta::MetaOutput,
     tui_keybindings: &TuiKeybindings,
     key_remaps: &KeyRemaps,
@@ -18,22 +19,34 @@ pub(super) fn render_meta_output(
     if sections.len() == 1
         && let Some(section) = sections.pop()
     {
-        return render_meta_section(section, tui_keybindings, key_remaps, display_mode);
+        return render_meta_section(section, tui_keybindings, key_remaps, display_mode).await;
     }
 
     render_meta_sections_inline(&sections);
     Ok(())
 }
 
-pub(super) fn print_rows_display(
+pub(super) async fn print_rows_display(
     display: RowsDisplay,
     tui_keybindings: &TuiKeybindings,
     key_remaps: &KeyRemaps,
+    update_pool: Option<&PgPool>,
 ) -> AppResult<()> {
     match display {
         RowsDisplay::Inline(output) => println!("{output}"),
-        RowsDisplay::Tui(grid) => {
-            show_result_grid(&grid, tui_keybindings, key_remaps)?;
+        RowsDisplay::Tui(mut grid) => {
+            match update_pool {
+                Some(pool) => {
+                    show_result_grid_with_updates(
+                        &mut grid,
+                        tui_keybindings,
+                        key_remaps,
+                        Some(pool),
+                    )
+                    .await?;
+                }
+                None => show_result_grid(&mut grid, tui_keybindings, key_remaps).await?,
+            }
             println!("{}", render_row_count(grid.row_count()));
         }
     }
@@ -59,7 +72,7 @@ fn render_section_title(title: &str) -> String {
         .to_string()
 }
 
-fn render_meta_section(
+async fn render_meta_section(
     section: meta::MetaSection,
     tui_keybindings: &TuiKeybindings,
     key_remaps: &KeyRemaps,
@@ -69,7 +82,9 @@ fn render_meta_section(
         grid_rows_display(section.grid, display_mode),
         tui_keybindings,
         key_remaps,
+        None,
     )
+    .await
 }
 
 fn grid_rows_display(grid: ResultGrid, display_mode: DisplayMode) -> RowsDisplay {

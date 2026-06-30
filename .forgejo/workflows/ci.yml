@@ -8,6 +8,7 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  CARGO_TARGET_DIR: target
 
 jobs:
   checks_on_commit:
@@ -26,18 +27,16 @@ jobs:
       - name: Dependencies
         run: |
           rustup component add rustfmt clippy
-          cargo fetch
+          cargo fetch --locked
 
       - name: Check formatting
         run: |
           cargo fmt --check
 
-      - name: Check common mistakes
+      - name: Check errors and common mistakes
         run: |
+          cargo check --locked
           cargo clippy --locked
-
-      - name: Check errors
-        run: cargo check --locked
 
       - name: Check tests
         run: cargo test --locked
