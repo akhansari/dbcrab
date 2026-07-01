@@ -2,6 +2,14 @@
 
 DBCrab is a modern REPL-first PostgreSQL client.
 
+## Screenshots
+
+REPL view:
+![DBCrab REPL](docs/assets/repl.png)
+
+TUI view:
+![DBCrab TUI](docs/assets/tui.png)
+
 ## Quick Start
 
 Installation:
