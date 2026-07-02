@@ -12,9 +12,10 @@ TUI view:
 
 ## Quick Start
 
-Installation:
+Installation (tested only on Linux):
 
 - Local: `cargo install --path .`
+- Crates: `cargo install dbcrab`
 
 Start DBCrab with a PostgreSQL connection string:
 
@@ -100,7 +101,7 @@ In the table viewer:
 Press `Alt-v` in the SQL prompt to cycle result display modes:
 
 - `auto`, let DBCrab choose inline output or the table viewer.
-- `full`, prefer the table viewer for row results.
+- `full` (TUI), prefer the table viewer for row results.
 - `inline`, print results directly in the terminal.
 
 ### Agent Mode
