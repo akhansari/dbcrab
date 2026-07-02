@@ -19,7 +19,7 @@ DBCrab is a modern REPL-first PostgreSQL client.
 - Use `crossterm` for terminal manipulation.
   - Docs: <https://docs.rs/crossterm>
   - Repo: <https://github.com/crossterm-rs/crossterm>
-- Use `tabled` to render SQL outputs.
+- Use `tabled` to render inline SQL outputs.
   - Docs: <https://raw.githubusercontent.com/zhiburt/tabled/refs/heads/master/README.md>
   - Repo: <https://github.com/zhiburt/tabled>
 - Use `ratatui` for the TUI display mode.

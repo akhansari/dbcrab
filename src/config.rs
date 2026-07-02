@@ -1,9 +1,12 @@
-use std::{env, fmt, fs, path::PathBuf};
+use std::{fmt, fs, path::PathBuf};
 
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 use reedline::{EditCommand, ReedlineEvent};
 
-use crate::errors::{AppError, AppResult};
+use crate::{
+    errors::{AppError, AppResult},
+    paths,
+};
 
 pub const DEFAULT_KEYBINDINGS_TOML: &str = r#"# emacs | vi
 edit_mode = "emacs"
@@ -829,7 +832,7 @@ impl fmt::Display for KeyBinding {
 
 pub fn load(path: Option<PathBuf>) -> AppResult<AppConfig> {
     let explicit_path = path.is_some();
-    let Some(path) = path.or_else(default_config_path) else {
+    let Some(path) = path.or_else(paths::default_config_path) else {
         return Ok(AppConfig::default());
     };
 
@@ -850,22 +853,6 @@ pub fn load(path: Option<PathBuf>) -> AppResult<AppConfig> {
 
     parse_config(&text)
         .map_err(|err| AppError::message(format!("invalid config `{}`: {err}", path.display())))
-}
-
-fn default_config_path() -> Option<PathBuf> {
-    if let Some(config_home) = env::var_os("XDG_CONFIG_HOME")
-        && !config_home.is_empty()
-    {
-        return Some(PathBuf::from(config_home).join("dbcrab/config.toml"));
-    }
-
-    env::var_os("HOME").and_then(|home| {
-        if home.is_empty() {
-            None
-        } else {
-            Some(PathBuf::from(home).join(".config/dbcrab/config.toml"))
-        }
-    })
 }
 
 fn parse_config(text: &str) -> Result<AppConfig, String> {

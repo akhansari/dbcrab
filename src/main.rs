@@ -7,6 +7,7 @@ mod connection;
 mod errors;
 mod highlight;
 mod meta;
+mod paths;
 mod prompt;
 mod render;
 mod repl;

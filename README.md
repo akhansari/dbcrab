@@ -32,6 +32,16 @@ from users
 limit 10;
 ```
 
+## Common Usage
+
+```sh
+dbcrab <conn>                         # interactive REPL
+dbcrab <conn> -e 'select 1'           # run one SQL statement
+dbcrab <conn> -: 'tables user'        # run one DBCrab command
+dbcrab --agent-guide                  # compact instructions for coding agents
+dbcrab --help                         # all CLI options
+```
+
 ## Main Features
 
 ### Smart SQL REPL
@@ -42,6 +52,7 @@ DBCrab is built for interactive database work:
 - Run several complete statements from one input.
 - Use syntax highlighting for keywords, strings, identifiers, comments, and numbers.
 - Keep typing until the statement is complete, DBCrab waits for the final semicolon.
+- Use persistent SQL history and reverse history search.
 - See clearer PostgreSQL errors, including query positions and helpful hints when possible.
 
 ### Autocomplete
@@ -91,6 +102,9 @@ Use `help describe` or `help source` for command-specific examples.
 DBCrab shows small results directly in the terminal. For larger or wider results,
 it can open a full-screen table viewer.
 
+Full-screen mode also supports cell preview and, for editable result rows,
+staging updates and writing them back.
+
 In the table viewer:
 
 - Move with arrow keys or `h`, `j`, `k`, `l`.
@@ -104,11 +118,26 @@ Press `Alt-v` in the SQL prompt to cycle result display modes:
 - `full` (TUI), prefer the table viewer for row results.
 - `inline`, print results directly in the terminal.
 
+### Editing In TUI View
+
+Some query results are editable in full-screen TUI mode. A cell becomes editable
+when DBCrab can trace it to a real table or partitioned table column and the
+result also includes that table's primary key columns.
+
+Select an editable cell and press `c` to edit it in the preview pane. Press
+`Ctrl-S` to stage the cell change, `Ctrl-X` to stage `NULL` for nullable cells,
+or `Esc` to cancel editing. Staged rows are highlighted; press `Ctrl-U` on the
+row to write staged changes back to PostgreSQL.
+
 ### Agent Mode
 
-DBCrab can run without the interactive REPL for coding agents and scripts.
-The output is token and context efficient.
-Use `-e` for `--execute` and `-:` for `--command`; `-c` remains `--context`.
+DBCrab can run without the interactive REPL for coding agents and scripts. Use
+`-e` for one SQL statement and `-:` for one DBCrab command. Run
+`dbcrab --agent-guide` to print a compact prompt for coding agents.
+
+Agent SQL execution is read-only by default, uses compact output, returns up to
+100 rows, and applies a 10s statement timeout. Use `dbcrab --help` for overrides
+when needed.
 
 Suggested prompt for `AGENTS.md` or other coding-agent instructions:
 
@@ -120,7 +149,10 @@ Run `dbcrab --agent-guide` before using it.
 ### History And Contexts
 
 DBCrab keeps a persistent SQL history when a state directory is available. By
-default, history is stored under your user state directory.
+default, history follows XDG state paths when configured. On Unix-like systems,
+it falls back to `$HOME/.local/state/dbcrab/history`. On Windows, it uses
+`%LOCALAPPDATA%\dbcrab\history` and falls back to
+`%USERPROFILE%\AppData\Local\dbcrab\history`.
 
 Use a named history context when you want separate histories for different
 projects or databases:
@@ -131,65 +163,36 @@ dbcrab postgres://user@localhost/app -c my_app
 
 ### Configuration
 
-DBCrab reads configuration from `dbcrab/config.toml` in your user configuration
-directory. Use `--config PATH` to load a specific file.
+DBCrab reads `dbcrab/config.toml` from your user configuration directory: XDG
+config paths when configured, `$HOME/.config/dbcrab/config.toml` on Unix-like
+systems, or `%APPDATA%\dbcrab\config.toml` on Windows. Use `--config PATH` to
+load a specific file.
 
-Print the default keybinding configuration with:
+Start with only the settings you want to change:
+
+```toml
+edit_mode = "emacs" # or "vi"
+
+[keybindings.prompt]
+complete.add = ["ctrl-y"]      # keep defaults and add ctrl-y
+complete.remove = ["ctrl-space"]
+cycle_display.set = ["ctrl-v"] # replace all bindings for this action
+command_mode = ["ctrl-g"]      # plain assignment is also replacement
+
+[keybindings.remap]
+j.swap = "n" # swap j and n in navigation contexts
+
+[keybindings.tui]
+quit.add = ["ctrl-q"]
+```
+
+Print the full default keybinding template with:
 
 ```sh
 dbcrab --default-keybindings
 ```
 
-Choose the prompt editing mode with:
-
-```toml
-edit_mode = "emacs" # or "vi"
-```
-
-Keybindings are merged with DBCrab and Reedline defaults. A plain assignment
-replaces an action's bindings, while `.add`, `.remove`, and `.set` patch the
-existing defaults.
-
-```toml
-[keybindings.remap]
-# Remaps navigation/action input. Plain character swaps are skipped while typing.
-j.swap = "n"
-# Modified remaps still apply in typing modes.
-ctrl-h.swap = "ctrl-i"
-
-[keybindings.prompt]
-complete.add = ["ctrl-y"]
-complete.remove = ["ctrl-space"]
-cycle_display = ["alt-v"]
-command_mode = [":"]
-
-[keybindings.prompt.insert]
-ClearScreen = ["ctrl-l"]
-HistoryMenu = ["ctrl-r"]
-
-[keybindings.prompt.vi_normal]
-# Reedline's built-in vi grammar still handles h/j/k/l, w, b, d, c, y, etc.
-
-[keybindings.command]
-complete = ["tab", "ctrl-space"]
-cancel = ["esc", "ctrl-d"]
-
-[keybindings.tui]
-left = ["left", "h"]
-up = ["up", "k"]
-right = ["right", "l"]
-down = ["down", "j"]
-edit_preview = ["c"]
-stage_preview = ["ctrl-s"]
-set_null = ["ctrl-x"]
-update_row = ["ctrl-u"]
-quit.add = ["q"]
-```
-
-Prompt line-editor sections use Reedline action names such as `ClearScreen`,
-`MoveToLineStart`, `BackspaceWord`, `Undo`, and `PasteCutBufferBefore`.
-Plain character remaps also apply to shifted input in non-typing contexts, so
-`j.swap = "n"` maps `j <-> n` and `J <-> N` in TUI and Vi normal mode. While
-typing SQL in Emacs/Vi insert mode or entering meta-commands, unmodified and
-Shift-only characters are left unchanged. Modified keys such as `ctrl-j` are
-only remapped when listed explicitly and still apply in typing modes.
+Keybindings are merged with DBCrab defaults. A plain assignment is the same as
+`.set`: it replaces an action's bindings. Use `.add` to append keys, `.remove`
+to drop keys, and `.swap` under `[keybindings.remap]` to create a two-way key
+remap. The swap is useful for those that have a different layout than QWERTY.
