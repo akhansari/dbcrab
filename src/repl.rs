@@ -1,6 +1,5 @@
 mod edit;
 mod history;
-mod menu;
 mod output;
 mod query;
 
@@ -16,15 +15,16 @@ use crossterm::{
     cursor::{self, SetCursorStyle},
     execute,
 };
+use nu_ansi_term::{Color, Style};
 use reedline::{
-    ColumnarMenu, CursorConfig, FileBackedHistory, ListMenu, MenuBuilder, Reedline, ReedlineMenu,
-    Signal,
+    ColumnarMenu, CursorConfig, FileBackedHistory, InputMode, ListMenu, MenuBuilder, Reedline,
+    ReedlineMenu, Signal,
 };
 use sqlx::PgPool;
 
 use crate::{
     catalog::SharedCatalog,
-    completion::{SqlCompleter, shared_completion_line_snapshot},
+    completion::SqlCompleter,
     config::{ConfigEditMode, HISTORY_MENU, KeyRemaps, KeybindingsConfig, TuiKeybindings},
     errors::AppResult,
     highlight::SqlHighlighter,
@@ -38,7 +38,6 @@ use crate::{
 use self::{
     edit::{CommandEditMode, SqlEditMode, command_inner_edit_mode, sql_inner_edit_mode},
     history::{HISTORY_LIMIT, persistent_history},
-    menu::FullBufferCompletionMenu,
     output::render_meta_output,
     query::execute_statement,
 };
@@ -128,11 +127,11 @@ fn build_sql_editor(
     command_mode_ready: Arc<AtomicBool>,
     history_context: Option<&str>,
 ) -> Reedline {
-    let completion_line = shared_completion_line_snapshot();
-    let completion_menu = Box::new(FullBufferCompletionMenu::new(
-        ColumnarMenu::default().with_name(COMPLETION_MENU),
-        completion_line.clone(),
-    ));
+    let completion_menu = Box::new(
+        ColumnarMenu::default()
+            .with_name(COMPLETION_MENU)
+            .with_input_mode(InputMode::FullBuffer),
+    );
     let sql_edit_mode = Box::new(SqlEditMode::new(
         sql_inner_edit_mode(edit_mode, keybindings),
         keybindings.remaps.clone(),
@@ -149,9 +148,7 @@ fn build_sql_editor(
 
     common_editor_settings(
         sql_editor
-            .with_completer(Box::new(
-                SqlCompleter::new(catalog).with_completion_line(completion_line),
-            ))
+            .with_completer(Box::new(SqlCompleter::new(catalog)))
             .with_menu(ReedlineMenu::EngineCompleter(completion_menu))
             .with_menu(ReedlineMenu::HistoryMenu(Box::new(
                 ListMenu::default()
@@ -202,6 +199,7 @@ fn common_editor_settings(editor: Reedline) -> Reedline {
             vi_normal: Some(SetCursorStyle::SteadyBlock),
             emacs: None,
         })
+        .with_visual_selection_style(Style::new().on(Color::DarkGray))
         .use_bracketed_paste(true)
 }
 

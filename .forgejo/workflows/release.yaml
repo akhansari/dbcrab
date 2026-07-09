@@ -26,6 +26,7 @@ jobs:
 
       - name: Publish crate
         run: |
+          cargo build --release --locked
           cargo publish --locked
           install -D target/release/dbcrab dist/dbcrab
 
@@ -35,3 +36,4 @@ jobs:
           direction: upload
           release-dir: dist
           override: true
+          release-notes-assistant: true

@@ -1,7 +1,4 @@
-use std::{
-    collections::HashMap,
-    sync::{Arc, RwLock},
-};
+use std::collections::HashMap;
 
 use nu_ansi_term::{Color, Style};
 use reedline::{Completer, Span, Suggestion};
@@ -21,20 +18,11 @@ use crate::{
 #[derive(Clone)]
 pub struct SqlCompleter {
     catalog: SharedCatalog,
-    completion_line: Option<SharedCompletionLineSnapshot>,
 }
 
 impl SqlCompleter {
     pub fn new(catalog: SharedCatalog) -> Self {
-        Self {
-            catalog,
-            completion_line: None,
-        }
-    }
-
-    pub fn with_completion_line(mut self, completion_line: SharedCompletionLineSnapshot) -> Self {
-        self.completion_line = Some(completion_line);
-        self
+        Self { catalog }
     }
 
     #[cfg(test)]
@@ -46,8 +34,7 @@ impl SqlCompleter {
     }
 
     fn suggestions(&self, line: &str, pos: usize) -> Vec<Suggestion> {
-        let (line, pos) = self.effective_input(line, pos);
-        let request = CompletionRequest::new(line, pos);
+        let request = CompletionRequest::new(line.to_owned(), pos);
         let candidates = self.catalog.read().map_or_else(
             |_| keyword_candidates(&request.input),
             |catalog| candidates_for_request(&catalog, &request),
@@ -55,44 +42,6 @@ impl SqlCompleter {
 
         build_suggestions(candidates, request.input.replacement_span, &request.input)
     }
-
-    fn effective_input(&self, line: &str, pos: usize) -> (String, usize) {
-        let pos = clamp_to_char_boundary(line, pos);
-        let Some(completion_line) = self.completion_line.as_ref() else {
-            return (line.to_owned(), pos);
-        };
-        let Ok(snapshot) = completion_line.read() else {
-            return (line.to_owned(), pos);
-        };
-
-        if snapshot.matches_prefix(line, pos) {
-            (snapshot.line.clone(), pos)
-        } else {
-            (line.to_owned(), pos)
-        }
-    }
-}
-
-pub type SharedCompletionLineSnapshot = Arc<RwLock<CompletionLineSnapshot>>;
-
-#[derive(Debug, Default)]
-pub struct CompletionLineSnapshot {
-    line: String,
-}
-
-impl CompletionLineSnapshot {
-    pub fn update(&mut self, line: &str) {
-        self.line.clear();
-        self.line.push_str(line);
-    }
-
-    fn matches_prefix(&self, line: &str, pos: usize) -> bool {
-        self.line.get(..pos).is_some_and(|prefix| prefix == line)
-    }
-}
-
-pub fn shared_completion_line_snapshot() -> SharedCompletionLineSnapshot {
-    Arc::new(RwLock::new(CompletionLineSnapshot::default()))
 }
 
 impl Completer for SqlCompleter {
@@ -1284,36 +1233,6 @@ mod tests {
 
         // When
         let suggestions = completer.suggestions("select u. from users u;", 9);
-        let id = suggestions
-            .iter()
-            .find(|suggestion| suggestion.value == "id")
-            .expect("id column suggestion");
-
-        // Then
-        assert_eq!(
-            id.description.as_deref(),
-            Some("column public.users.id (integer)")
-        );
-        assert!(
-            suggestions
-                .iter()
-                .any(|suggestion| suggestion.value == "email")
-        );
-    }
-
-    #[test]
-    fn completer_uses_completion_line_after_cursor_for_alias_columns() {
-        // Given
-        let completion_line = shared_completion_line_snapshot();
-        completion_line
-            .write()
-            .expect("completion line snapshot is not poisoned")
-            .update("select u. from users u;");
-        let completer =
-            SqlCompleter::new(shared_catalog(test_catalog())).with_completion_line(completion_line);
-
-        // When
-        let suggestions = completer.suggestions("select u.", 9);
         let id = suggestions
             .iter()
             .find(|suggestion| suggestion.value == "id")
