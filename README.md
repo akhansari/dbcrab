@@ -15,7 +15,7 @@ TUI view:
 Installation (tested only on Linux):
 
 - Local: `cargo install --path .`
-- Crates: `cargo install dbcrab`
+- [Crates](https://crates.io/crates/dbcrab): `cargo install dbcrab`
 
 Start DBCrab with a PostgreSQL connection string:
 

@@ -24,16 +24,14 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
-      - name: Publish crate
-        run: |
-          cargo build --release --locked
-          cargo publish --locked
-          install -D target/release/dbcrab dist/dbcrab
+      - name: Publish
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo publish --locked
 
       - name: Create release
         uses: actions/forgejo-release@v2.13.1
         with:
           direction: upload
-          release-dir: dist
           override: true
           release-notes-assistant: true
