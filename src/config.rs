@@ -106,6 +106,7 @@ edit_preview = ["c"]
 stage_preview = ["ctrl-s"]
 set_null = ["ctrl-x"]
 update_row = ["ctrl-u"]
+yank_cell = ["y"]
 
 quit = ["q", "esc", "ctrl-c"]
 "#;
@@ -297,6 +298,7 @@ pub struct TuiKeybindings {
     stage_preview: Vec<KeyBinding>,
     set_null: Vec<KeyBinding>,
     update_row: Vec<KeyBinding>,
+    yank_cell: Vec<KeyBinding>,
     quit: Vec<KeyBinding>,
 }
 
@@ -321,6 +323,7 @@ impl Default for TuiKeybindings {
             stage_preview: key_bindings(["ctrl-s"]),
             set_null: key_bindings(["ctrl-x"]),
             update_row: key_bindings(["ctrl-u"]),
+            yank_cell: key_bindings(["y"]),
             quit: key_bindings(["q", "esc", "ctrl-c"]),
         }
     }
@@ -363,6 +366,7 @@ impl TuiKeybindings {
             TuiAction::StagePreview => &self.stage_preview,
             TuiAction::SetNull => &self.set_null,
             TuiAction::UpdateRow => &self.update_row,
+            TuiAction::YankCell => &self.yank_cell,
             TuiAction::Quit => &self.quit,
         }
     }
@@ -387,6 +391,7 @@ impl TuiKeybindings {
             TuiAction::StagePreview => self.stage_preview = bindings,
             TuiAction::SetNull => self.set_null = bindings,
             TuiAction::UpdateRow => self.update_row = bindings,
+            TuiAction::YankCell => self.yank_cell = bindings,
             TuiAction::Quit => self.quit = bindings,
         }
     }
@@ -493,11 +498,12 @@ pub enum TuiAction {
     StagePreview,
     SetNull,
     UpdateRow,
+    YankCell,
     Quit,
 }
 
 impl TuiAction {
-    const ALL: [Self; 19] = [
+    const ALL: [Self; 20] = [
         Self::Left,
         Self::Up,
         Self::Right,
@@ -516,6 +522,7 @@ impl TuiAction {
         Self::StagePreview,
         Self::SetNull,
         Self::UpdateRow,
+        Self::YankCell,
         Self::Quit,
     ];
 
@@ -539,6 +546,7 @@ impl TuiAction {
             Self::StagePreview => "stage_preview",
             Self::SetNull => "set_null",
             Self::UpdateRow => "update_row",
+            Self::YankCell => "yank_cell",
             Self::Quit => "quit",
         }
     }
@@ -1768,6 +1776,7 @@ mod tests {
         let ctrl_s = KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL);
         let ctrl_x = KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL);
         let ctrl_u = KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL);
+        let y = KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE);
 
         // When
         let enter_action = keybindings.action_for(enter);
@@ -1776,6 +1785,7 @@ mod tests {
         let stage_action = keybindings.action_for(ctrl_s);
         let null_action = keybindings.action_for(ctrl_x);
         let update_action = keybindings.action_for(ctrl_u);
+        let yank_action = keybindings.action_for(y);
 
         // Then
         assert_eq!(enter_action, Some(TuiAction::TogglePreview));
@@ -1784,5 +1794,6 @@ mod tests {
         assert_eq!(stage_action, Some(TuiAction::StagePreview));
         assert_eq!(null_action, Some(TuiAction::SetNull));
         assert_eq!(update_action, Some(TuiAction::UpdateRow));
+        assert_eq!(yank_action, Some(TuiAction::YankCell));
     }
 }

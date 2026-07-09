@@ -225,6 +225,9 @@ pub(super) fn status_line(
                 "preview",
             );
         }
+        if grid.row_count() > 0 && grid.column_count() > 0 {
+            push_control(&mut controls, keybindings, TuiAction::YankCell, "yank");
+        }
         if selected_cell_editable {
             push_control(&mut controls, keybindings, TuiAction::EditPreview, "edit");
         }

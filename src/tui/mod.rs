@@ -1,6 +1,7 @@
 use std::io;
 
 use crossterm::{
+    clipboard::CopyToClipboard,
     event::{self, Event, KeyEventKind},
     execute,
     terminal::{self as crossterm_terminal, EnterAlternateScreen, LeaveAlternateScreen},
@@ -136,6 +137,13 @@ async fn run_result_grid(
         match state.handle_key(key, grid, keybindings) {
             TuiRequest::Continue => {}
             TuiRequest::Quit => break,
+            TuiRequest::YankCell(value) => {
+                let message = match yank_cell_to_clipboard(&value) {
+                    Ok(()) => "yanked cell",
+                    Err(_) => "yank failed",
+                };
+                state.set_toast(message);
+            }
             TuiRequest::UpdateSelectedRow => {
                 state.set_toast("updating row...");
                 terminal.draw(|frame| render_result_grid(frame, grid, &mut state, keybindings))?;
@@ -150,4 +158,8 @@ async fn run_result_grid(
     }
 
     Ok(())
+}
+
+fn yank_cell_to_clipboard(value: &str) -> io::Result<()> {
+    execute!(io::stdout(), CopyToClipboard::to_clipboard_from(value))
 }

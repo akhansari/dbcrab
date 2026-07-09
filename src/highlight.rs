@@ -1,5 +1,5 @@
 use nu_ansi_term::{Color, Style};
-use reedline::{Highlighter, StyledText};
+use reedline::{AbbrExpandContext, Highlighter, StyledText};
 
 use crate::sql::is_sql_keyword;
 
@@ -10,8 +10,8 @@ impl Highlighter for SqlHighlighter {
         highlight_sql(line)
     }
 
-    fn is_inside_string_literal(&self, line: &str, cursor: usize) -> bool {
-        is_inside_string(line, cursor.min(line.len()))
+    fn should_expand_abbr(&self, line: &str, cursor: usize, _context: AbbrExpandContext) -> bool {
+        !is_inside_string(line, cursor.min(line.len()))
     }
 }
 

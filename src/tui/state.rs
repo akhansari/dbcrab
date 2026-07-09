@@ -42,11 +42,12 @@ pub(super) enum ViewMode {
     Edit(Box<PreviewEdit>),
 }
 
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+#[derive(Debug, Clone, Eq, PartialEq)]
 pub(super) enum TuiRequest {
     Continue,
     Quit,
     UpdateSelectedRow,
+    YankCell(String),
 }
 
 #[derive(Debug, Default, Clone, Copy, Eq, PartialEq)]
@@ -93,6 +94,7 @@ impl GridViewState {
             TuiAction::SetNull if self.focus == Focus::Preview => self.stage_null(grid),
             TuiAction::SetNull => {}
             TuiAction::UpdateRow => return TuiRequest::UpdateSelectedRow,
+            TuiAction::YankCell => return self.yank_selected_cell(grid),
             _ if self.focus == Focus::Preview => self.apply_preview_action(action),
             _ => self.apply_table_action(action, grid),
         }
@@ -320,6 +322,15 @@ impl GridViewState {
         self.invalidate_preview();
     }
 
+    fn yank_selected_cell(&mut self, grid: &ResultGrid) -> TuiRequest {
+        if let Some(text) = self.display_cell_text(grid, self.selected_row, self.selected_col) {
+            TuiRequest::YankCell(text.to_owned())
+        } else {
+            self.set_toast("nothing to yank");
+            TuiRequest::Continue
+        }
+    }
+
     pub(super) fn edit_cursor_position(&self, content_area: Rect) -> Option<Position> {
         let edit = self.active_edit()?;
         if content_area.width == 0 || content_area.height == 0 {
@@ -399,6 +410,7 @@ impl GridViewState {
             | TuiAction::StagePreview
             | TuiAction::SetNull
             | TuiAction::UpdateRow
+            | TuiAction::YankCell
             | TuiAction::Quit => {}
         }
 
@@ -424,7 +436,7 @@ impl GridViewState {
                 self.scroll_preview_down_by(self.visible_preview_rows)
             }
             TuiAction::SetNull => {}
-            TuiAction::StagePreview | TuiAction::UpdateRow => {}
+            TuiAction::StagePreview | TuiAction::UpdateRow | TuiAction::YankCell => {}
             TuiAction::TogglePreview
             | TuiAction::FocusNext
             | TuiAction::EditPreview

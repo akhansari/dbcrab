@@ -84,6 +84,7 @@ impl SqlEditMode {
             }
             PromptEditMode::Default
             | PromptEditMode::Vi(PromptViMode::Normal)
+            | PromptEditMode::Vi(PromptViMode::Visual)
             | PromptEditMode::Custom(_) => self.key_remaps.remap_event(event),
         }
     }

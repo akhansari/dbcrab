@@ -117,7 +117,7 @@ fn status_line_hides_inactive_preview_switch_control() {
     // Then
     assert_eq!(
         status,
-        "row 1/2, column 1/3 | visible columns 1-3 | <enter> preview"
+        "row 1/2, column 1/3 | visible columns 1-3 | <enter> preview | <y> yank"
     );
 }
 
@@ -134,7 +134,7 @@ fn status_line_shows_preview_switch_control_when_preview_is_open() {
     // Then
     assert_eq!(
         status,
-        "row 1/2, column 1/3 | visible columns 1-3 | <enter> preview | <tab> switch pane"
+        "row 1/2, column 1/3 | visible columns 1-3 | <enter> preview | <y> yank | <tab> switch pane"
     );
 }
 
@@ -153,7 +153,7 @@ fn status_line_shows_update_control_for_dirty_row() {
     // Then
     assert_eq!(
         status,
-        "row 1/2, column 1/3 | visible columns 1-3 | <enter> preview | <ctrl-u> update row"
+        "row 1/2, column 1/3 | visible columns 1-3 | <enter> preview | <y> yank | <ctrl-u> update row"
     );
 }
 
@@ -172,7 +172,7 @@ fn status_line_shows_null_control_for_nullable_preview_cell() {
     // Then
     assert_eq!(
         status,
-        "row 1/1, column 2/2 | visible columns 1-2 | <enter> preview | <c> edit | <ctrl-x> NULL | <tab> switch pane"
+        "row 1/1, column 2/2 | visible columns 1-2 | <enter> preview | <y> yank | <c> edit | <ctrl-x> NULL | <tab> switch pane"
     );
 }
 
@@ -190,7 +190,7 @@ fn status_line_hides_null_control_from_table_focus() {
     // Then
     assert_eq!(
         status,
-        "row 1/1, column 2/2 | visible columns 1-2 | <enter> preview | <c> edit | <tab> switch pane"
+        "row 1/1, column 2/2 | visible columns 1-2 | <enter> preview | <y> yank | <c> edit | <tab> switch pane"
     );
 }
 
@@ -225,7 +225,7 @@ fn status_line_omits_toast_message() {
     // Then
     assert_eq!(
         status,
-        "row 1/2, column 1/3 | visible columns 1-3 | <enter> preview"
+        "row 1/2, column 1/3 | visible columns 1-3 | <enter> preview | <y> yank"
     );
 }
 
@@ -427,6 +427,43 @@ fn quit_keys_exit_viewer() {
 
     // Then
     assert_eq!(request, TuiRequest::Quit);
+}
+
+#[test]
+fn y_yanks_selected_cell() {
+    // Given
+    let grid = test_grid(2, 2);
+    let mut state = GridViewState {
+        selected_row: 1,
+        selected_col: 1,
+        ..GridViewState::new()
+    };
+    let key = KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE);
+    let keybindings = TuiKeybindings::default();
+
+    // When
+    let request = state.handle_key(key, &grid, &keybindings);
+
+    // Then
+    assert_eq!(request, TuiRequest::YankCell("r2c2".to_owned()));
+}
+
+#[test]
+fn y_yanks_staged_cell_value() {
+    // Given
+    let grid = test_grid(2, 2);
+    let mut state = GridViewState::new();
+    state
+        .staged
+        .insert((0, 0), CellValue::Text("changed".to_owned()));
+    let key = KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE);
+    let keybindings = TuiKeybindings::default();
+
+    // When
+    let request = state.handle_key(key, &grid, &keybindings);
+
+    // Then
+    assert_eq!(request, TuiRequest::YankCell("changed".to_owned()));
 }
 
 #[test]

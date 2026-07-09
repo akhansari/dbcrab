@@ -1,4 +1,4 @@
-name: ci
+name: checks
 
 on:
   push:
@@ -12,17 +12,18 @@ env:
 
 jobs:
   checks_on_commit:
-    runs-on: codeberg-medium-lazy
+    runs-on: codeberg-medium
     container:
       image: rust:1
 
     steps:
-      - name: Checkout
+      - name: Actions runtime
         run: |
-          git init .
-          git remote add origin "${FORGEJO_SERVER_URL}/${FORGEJO_REPOSITORY}.git"
-          git fetch --depth 1 origin "${FORGEJO_REF:-${GITHUB_SHA}}"
-          git checkout --detach FETCH_HEAD
+          apt-get update
+          apt-get install nodejs -y
+
+      - name: Checkout
+        uses: actions/checkout@v7
 
       - name: Dependencies
         run: |

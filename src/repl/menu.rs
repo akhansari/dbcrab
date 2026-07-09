@@ -1,4 +1,4 @@
-use reedline::{Completer, Editor, Menu, MenuEvent, MenuSettings, Painter, Suggestion};
+use reedline::{Completer, Editor, Menu, MenuEvent, Painter, Suggestion};
 
 use crate::completion::SharedCompletionLineSnapshot;
 
@@ -25,8 +25,12 @@ impl<M> FullBufferCompletionMenu<M> {
 }
 
 impl<M: Menu> Menu for FullBufferCompletionMenu<M> {
-    fn settings(&self) -> &MenuSettings {
-        self.inner.settings()
+    fn name(&self) -> &str {
+        self.inner.name()
+    }
+
+    fn indicator(&self) -> &str {
+        self.inner.indicator()
     }
 
     fn is_active(&self) -> bool {

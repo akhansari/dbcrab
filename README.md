@@ -109,6 +109,7 @@ In the table viewer:
 
 - Move with arrow keys or `h`, `j`, `k`, `l`.
 - Press `Enter` to preview the selected cell.
+- Press `y` to yank the selected cell to the clipboard.
 - Press `Tab` to switch focus between the table and preview.
 - Press `q`, `Esc`, or `Ctrl-C` to close the viewer.
 
