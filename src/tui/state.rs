@@ -89,10 +89,10 @@ impl GridViewState {
             TuiAction::Quit => return TuiRequest::Quit,
             TuiAction::TogglePreview => self.toggle_preview(),
             TuiAction::FocusNext => self.focus_next(),
-            TuiAction::EditPreview => self.start_edit(grid),
-            TuiAction::StagePreview => {}
-            TuiAction::SetNull if self.focus == Focus::Preview => self.stage_null(grid),
-            TuiAction::SetNull => {}
+            TuiAction::EditCell => self.start_edit(grid),
+            TuiAction::StageChange => {}
+            TuiAction::StageNull if self.focus == Focus::Preview => self.stage_null(grid),
+            TuiAction::StageNull => {}
             TuiAction::UpdateRow => return TuiRequest::UpdateSelectedRow,
             TuiAction::YankCell => return self.yank_selected_cell(grid),
             _ if self.focus == Focus::Preview => self.apply_preview_action(action),
@@ -240,12 +240,12 @@ impl GridViewState {
     }
 
     fn handle_edit_key(&mut self, key: KeyEvent, grid: &ResultGrid, keybindings: &TuiKeybindings) {
-        if keybindings.matches_action(TuiAction::StagePreview, key) {
+        if keybindings.matches_action(TuiAction::StageChange, key) {
             self.stage_edit_buffer(grid);
             return;
         }
 
-        if keybindings.matches_action(TuiAction::SetNull, key) {
+        if keybindings.matches_action(TuiAction::StageNull, key) {
             self.stage_null(grid);
             return;
         }
@@ -406,9 +406,9 @@ impl GridViewState {
             TuiAction::FullPageDown => self.move_down_by(self.visible_rows, grid.row_count()),
             TuiAction::TogglePreview
             | TuiAction::FocusNext
-            | TuiAction::EditPreview
-            | TuiAction::StagePreview
-            | TuiAction::SetNull
+            | TuiAction::EditCell
+            | TuiAction::StageChange
+            | TuiAction::StageNull
             | TuiAction::UpdateRow
             | TuiAction::YankCell
             | TuiAction::Quit => {}
@@ -435,11 +435,11 @@ impl GridViewState {
             TuiAction::FullPageRight | TuiAction::FullPageDown => {
                 self.scroll_preview_down_by(self.visible_preview_rows)
             }
-            TuiAction::SetNull => {}
-            TuiAction::StagePreview | TuiAction::UpdateRow | TuiAction::YankCell => {}
+            TuiAction::StageNull => {}
+            TuiAction::StageChange | TuiAction::UpdateRow | TuiAction::YankCell => {}
             TuiAction::TogglePreview
             | TuiAction::FocusNext
-            | TuiAction::EditPreview
+            | TuiAction::EditCell
             | TuiAction::Quit => {}
         }
     }

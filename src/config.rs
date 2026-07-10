@@ -102,9 +102,9 @@ full_page_down = ["ctrl-j", "pagedown"]
 
 toggle_preview = ["enter"]
 focus_next = ["tab"]
-edit_preview = ["c"]
-stage_preview = ["ctrl-s"]
-set_null = ["ctrl-x"]
+edit_cell = ["c"]
+stage_change = ["ctrl-s"]
+stage_null = ["ctrl-x"]
 update_row = ["ctrl-u"]
 yank_cell = ["y"]
 
@@ -294,9 +294,9 @@ pub struct TuiKeybindings {
     full_page_down: Vec<KeyBinding>,
     toggle_preview: Vec<KeyBinding>,
     focus_next: Vec<KeyBinding>,
-    edit_preview: Vec<KeyBinding>,
-    stage_preview: Vec<KeyBinding>,
-    set_null: Vec<KeyBinding>,
+    edit_cell: Vec<KeyBinding>,
+    stage_change: Vec<KeyBinding>,
+    stage_null: Vec<KeyBinding>,
     update_row: Vec<KeyBinding>,
     yank_cell: Vec<KeyBinding>,
     quit: Vec<KeyBinding>,
@@ -319,9 +319,9 @@ impl Default for TuiKeybindings {
             full_page_down: key_bindings(["ctrl-j", "pagedown"]),
             toggle_preview: key_bindings(["enter"]),
             focus_next: key_bindings(["tab"]),
-            edit_preview: key_bindings(["c"]),
-            stage_preview: key_bindings(["ctrl-s"]),
-            set_null: key_bindings(["ctrl-x"]),
+            edit_cell: key_bindings(["c"]),
+            stage_change: key_bindings(["ctrl-s"]),
+            stage_null: key_bindings(["ctrl-x"]),
             update_row: key_bindings(["ctrl-u"]),
             yank_cell: key_bindings(["y"]),
             quit: key_bindings(["q", "esc", "ctrl-c"]),
@@ -362,9 +362,9 @@ impl TuiKeybindings {
             TuiAction::FullPageDown => &self.full_page_down,
             TuiAction::TogglePreview => &self.toggle_preview,
             TuiAction::FocusNext => &self.focus_next,
-            TuiAction::EditPreview => &self.edit_preview,
-            TuiAction::StagePreview => &self.stage_preview,
-            TuiAction::SetNull => &self.set_null,
+            TuiAction::EditCell => &self.edit_cell,
+            TuiAction::StageChange => &self.stage_change,
+            TuiAction::StageNull => &self.stage_null,
             TuiAction::UpdateRow => &self.update_row,
             TuiAction::YankCell => &self.yank_cell,
             TuiAction::Quit => &self.quit,
@@ -387,9 +387,9 @@ impl TuiKeybindings {
             TuiAction::FullPageDown => self.full_page_down = bindings,
             TuiAction::TogglePreview => self.toggle_preview = bindings,
             TuiAction::FocusNext => self.focus_next = bindings,
-            TuiAction::EditPreview => self.edit_preview = bindings,
-            TuiAction::StagePreview => self.stage_preview = bindings,
-            TuiAction::SetNull => self.set_null = bindings,
+            TuiAction::EditCell => self.edit_cell = bindings,
+            TuiAction::StageChange => self.stage_change = bindings,
+            TuiAction::StageNull => self.stage_null = bindings,
             TuiAction::UpdateRow => self.update_row = bindings,
             TuiAction::YankCell => self.yank_cell = bindings,
             TuiAction::Quit => self.quit = bindings,
@@ -494,9 +494,9 @@ pub enum TuiAction {
     FullPageDown,
     TogglePreview,
     FocusNext,
-    EditPreview,
-    StagePreview,
-    SetNull,
+    EditCell,
+    StageChange,
+    StageNull,
     UpdateRow,
     YankCell,
     Quit,
@@ -518,9 +518,9 @@ impl TuiAction {
         Self::FullPageDown,
         Self::TogglePreview,
         Self::FocusNext,
-        Self::EditPreview,
-        Self::StagePreview,
-        Self::SetNull,
+        Self::EditCell,
+        Self::StageChange,
+        Self::StageNull,
         Self::UpdateRow,
         Self::YankCell,
         Self::Quit,
@@ -542,9 +542,9 @@ impl TuiAction {
             Self::FullPageDown => "full_page_down",
             Self::TogglePreview => "toggle_preview",
             Self::FocusNext => "focus_next",
-            Self::EditPreview => "edit_preview",
-            Self::StagePreview => "stage_preview",
-            Self::SetNull => "set_null",
+            Self::EditCell => "edit_cell",
+            Self::StageChange => "stage_change",
+            Self::StageNull => "stage_null",
             Self::UpdateRow => "update_row",
             Self::YankCell => "yank_cell",
             Self::Quit => "quit",
@@ -1790,9 +1790,9 @@ mod tests {
         // Then
         assert_eq!(enter_action, Some(TuiAction::TogglePreview));
         assert_eq!(tab_action, Some(TuiAction::FocusNext));
-        assert_eq!(edit_action, Some(TuiAction::EditPreview));
-        assert_eq!(stage_action, Some(TuiAction::StagePreview));
-        assert_eq!(null_action, Some(TuiAction::SetNull));
+        assert_eq!(edit_action, Some(TuiAction::EditCell));
+        assert_eq!(stage_action, Some(TuiAction::StageChange));
+        assert_eq!(null_action, Some(TuiAction::StageNull));
         assert_eq!(update_action, Some(TuiAction::UpdateRow));
         assert_eq!(yank_action, Some(TuiAction::YankCell));
     }

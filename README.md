@@ -36,9 +36,7 @@ limit 10;
 
 ```sh
 dbcrab <conn>                         # interactive REPL
-dbcrab <conn> -e 'select 1'           # run one SQL statement
-dbcrab <conn> -: 'tables user'        # run one DBCrab command
-dbcrab --agent-guide                  # compact instructions for coding agents
+dbcrab --agent-guide                  # instructions for coding agents
 dbcrab --help                         # all CLI options
 ```
 

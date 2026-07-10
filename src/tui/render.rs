@@ -211,9 +211,9 @@ pub(super) fn status_line(
             .is_some_and(|info| info.nullable);
 
     if state.is_editing() {
-        push_control(&mut controls, keybindings, TuiAction::StagePreview, "stage");
+        push_control(&mut controls, keybindings, TuiAction::StageChange, "stage");
         if selected_cell_nullable {
-            push_control(&mut controls, keybindings, TuiAction::SetNull, "NULL");
+            push_control(&mut controls, keybindings, TuiAction::StageNull, "NULL");
         }
         controls.push("<esc> cancel".to_owned());
     } else {
@@ -229,10 +229,10 @@ pub(super) fn status_line(
             push_control(&mut controls, keybindings, TuiAction::YankCell, "yank");
         }
         if selected_cell_editable {
-            push_control(&mut controls, keybindings, TuiAction::EditPreview, "edit");
+            push_control(&mut controls, keybindings, TuiAction::EditCell, "edit");
         }
         if state.focus == Focus::Preview && selected_cell_nullable {
-            push_control(&mut controls, keybindings, TuiAction::SetNull, "NULL");
+            push_control(&mut controls, keybindings, TuiAction::StageNull, "NULL");
         }
         if state.preview_open {
             push_control(
