@@ -20,62 +20,64 @@ command_mode = [":"]
 # h.swap = "i"
 
 [keybindings.prompt.insert]
-Esc = ["esc"]
-CtrlC = ["ctrl-c"]
-CtrlD = ["ctrl-d"]
-ClearScreen = ["ctrl-l"]
-HistoryMenu = ["ctrl-r"]
-OpenEditor = ["ctrl-o"]
-
-Enter = ["enter", "ctrl-j"]
-InsertNewline = ["alt-enter", "shift-enter"]
-
-MoveWordLeft = ["ctrl-left"]
-MoveWordRight = ["ctrl-right"]
-MoveToLineStart = ["home", "ctrl-a"]
-MoveToLineEnd = ["end", "ctrl-e"]
-MoveToStart = ["ctrl-home"]
-MoveToEnd = ["ctrl-end"]
-ToStart = ["alt-<", "shift-alt-,"]
-ToEnd = ["alt->", "shift-alt-."]
-
-Backspace = ["backspace", "ctrl-h"]
-Delete = ["delete"]
-BackspaceWord = ["ctrl-backspace", "ctrl-w"]
-DeleteWord = ["ctrl-delete"]
-
-MoveLineUpSelect = ["shift-up"]
-MoveLineDownSelect = ["shift-down"]
-MoveLeftSelect = ["shift-left"]
-MoveRightSelect = ["shift-right"]
-MoveWordLeftSelect = ["shift-ctrl-left"]
-MoveWordRightSelect = ["shift-ctrl-right"]
-MoveToLineStartSelect = ["shift-home"]
-MoveToLineEndSelect = ["shift-end"]
-MoveToStartSelect = ["shift-ctrl-home"]
-MoveToEndSelect = ["shift-ctrl-end"]
-SelectAll = ["shift-ctrl-a"]
+# Inherits Reedline's built-in insert bindings. Uncomment entries to override them.
+# Esc = ["esc"]
+# CtrlC = ["ctrl-c"]
+# CtrlD = ["ctrl-d"]
+# ClearScreen = ["ctrl-l"]
+# HistoryMenu = ["ctrl-r"]
+# OpenEditor = ["ctrl-o"]
+#
+# Enter = ["enter", "ctrl-j"]
+# InsertNewline = ["alt-enter", "shift-enter"]
+#
+# MoveWordLeft = ["ctrl-left"]
+# MoveWordRight = ["ctrl-right"]
+# MoveToLineStart = ["home", "ctrl-a"]
+# MoveToLineEnd = ["end", "ctrl-e"]
+# MoveToStart = ["ctrl-home"]
+# MoveToEnd = ["ctrl-end"]
+# ToStart = ["alt-<", "shift-alt-,"]
+# ToEnd = ["alt->", "shift-alt-."]
+#
+# Backspace = ["backspace", "ctrl-h"]
+# Delete = ["delete"]
+# BackspaceWord = ["ctrl-backspace", "ctrl-w"]
+# DeleteWord = ["ctrl-delete"]
+#
+# MoveLineUpSelect = ["shift-up"]
+# MoveLineDownSelect = ["shift-down"]
+# MoveLeftSelect = ["shift-left"]
+# MoveRightSelect = ["shift-right"]
+# MoveWordLeftSelect = ["shift-ctrl-left"]
+# MoveWordRightSelect = ["shift-ctrl-right"]
+# MoveToLineStartSelect = ["shift-home"]
+# MoveToLineEndSelect = ["shift-end"]
+# MoveToStartSelect = ["shift-ctrl-home"]
+# MoveToEndSelect = ["shift-ctrl-end"]
+# SelectAll = ["shift-ctrl-a"]
 
 [keybindings.prompt.emacs]
-MoveWordLeft.add = ["alt-left", "alt-b"]
-MoveWordRight.add = ["alt-right", "alt-f"]
-BackspaceWord.add = ["alt-backspace", "alt-m"]
-DeleteWord.add = ["alt-delete"]
-
-Redo = ["ctrl-g"]
-Undo = ["ctrl-z"]
-PasteCutBufferBefore = ["ctrl-y"]
-CutWordLeft = ["ctrl-w"]
-KillLine = ["ctrl-k"]
-CutFromStart = ["ctrl-u"]
-CutWordRight = ["alt-d"]
-SwapGraphemes = ["ctrl-t"]
-UppercaseWord = ["alt-u"]
-LowercaseWord = ["alt-l"]
-CapitalizeChar = ["alt-c"]
+# Inherits Reedline's built-in Emacs bindings. Uncomment entries to customize them.
+# MoveWordLeft.add = ["alt-left", "alt-b"]
+# MoveWordRight.add = ["alt-right", "alt-f"]
+# BackspaceWord.add = ["alt-backspace", "alt-m"]
+# DeleteWord.add = ["alt-delete"]
+#
+# Redo = ["ctrl-g"]
+# Undo = ["ctrl-z"]
+# PasteCutBufferBefore = ["ctrl-y"]
+# CutWordLeft = ["ctrl-w"]
+# KillLine = ["ctrl-k"]
+# CutFromStart = ["ctrl-u"]
+# CutWordRight = ["alt-d"]
+# SwapGraphemes = ["ctrl-t"]
+# UppercaseWord = ["alt-u"]
+# LowercaseWord = ["alt-l"]
+# CapitalizeChar = ["alt-c"]
 
 [keybindings.prompt.vi_insert]
-# Inherits keybindings.prompt.insert.
+# Inherits Reedline's Vi insert bindings and keybindings.prompt.insert overrides.
 
 [keybindings.prompt.vi_normal]
 # Reedline's built-in vi grammar handles h/j/k/l, w, b, d, c, y, etc.
@@ -1544,7 +1546,7 @@ mod tests {
     }
 
     #[test]
-    fn default_keybindings_toml_parses() {
+    fn default_keybindings_toml_matches_runtime_defaults() {
         // Given
         let defaults = DEFAULT_KEYBINDINGS_TOML;
 
@@ -1552,7 +1554,7 @@ mod tests {
         let config = parse_config(defaults).expect("default keybindings should parse");
 
         // Then
-        assert_eq!(config.edit_mode, ConfigEditMode::Emacs);
+        assert_eq!(config, AppConfig::default());
     }
 
     #[test]
