@@ -344,15 +344,17 @@ pub enum DisplayMode {
     #[default]
     Auto,
     Inline,
-    Full,
+    InlineBlank,
+    Tui,
 }
 
 impl DisplayMode {
     pub fn next(self) -> Self {
         match self {
-            Self::Auto => Self::Full,
-            Self::Full => Self::Inline,
-            Self::Inline => Self::Auto,
+            Self::Auto => Self::Tui,
+            Self::Tui => Self::Inline,
+            Self::Inline => Self::InlineBlank,
+            Self::InlineBlank => Self::Auto,
         }
     }
 
@@ -360,9 +362,16 @@ impl DisplayMode {
         match self {
             Self::Auto => "auto",
             Self::Inline => "inline",
-            Self::Full => "full",
+            Self::InlineBlank => "inline-blank",
+            Self::Tui => "tui",
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+enum InlineTableStyle {
+    Modern,
+    Blank,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -401,14 +410,26 @@ impl DisplayModeState {
 }
 
 pub fn render_rows(rows: &[PgRow]) -> String {
+    render_rows_with_style(rows, InlineTableStyle::Modern)
+}
+
+pub fn render_rows_blank(rows: &[PgRow]) -> String {
+    render_rows_with_style(rows, InlineTableStyle::Blank)
+}
+
+fn render_rows_with_style(rows: &[PgRow], style: InlineTableStyle) -> String {
     if rows.is_empty() {
         return render_row_count(0);
     }
 
     let table = if rows.len() == 1 {
-        render_expanded_table(expanded_display_builder(&rows[0]), terminal_table_width())
+        render_expanded_table_with_style(
+            expanded_display_builder(&rows[0]),
+            terminal_table_width(),
+            style,
+        )
     } else {
-        render_table(rows_builder(rows), terminal_table_width())
+        render_table_with_style(rows_builder(rows), terminal_table_width(), style)
     };
 
     let mut output = String::new();
@@ -425,14 +446,22 @@ pub fn render_rows(rows: &[PgRow]) -> String {
 }
 
 pub fn render_grid(grid: &ResultGrid) -> String {
+    render_grid_with_style(grid, InlineTableStyle::Modern)
+}
+
+pub fn render_grid_blank(grid: &ResultGrid) -> String {
+    render_grid_with_style(grid, InlineTableStyle::Blank)
+}
+
+fn render_grid_with_style(grid: &ResultGrid, style: InlineTableStyle) -> String {
     if grid.row_count() == 0 {
         return render_row_count(0);
     }
 
     let table = if grid.row_count() == 1 {
-        render_expanded_table(grid_expanded_builder(grid), terminal_table_width())
+        render_expanded_table_with_style(grid_expanded_builder(grid), terminal_table_width(), style)
     } else {
-        render_table(grid_builder(grid), terminal_table_width())
+        render_table_with_style(grid_builder(grid), terminal_table_width(), style)
     };
 
     let mut output = String::new();
@@ -545,9 +574,17 @@ fn expanded_builder(fields: impl IntoIterator<Item = (String, String)>) -> Build
     builder
 }
 
+#[cfg(test)]
 fn render_table(builder: Builder, width: usize) -> String {
+    render_table_with_style(builder, width, InlineTableStyle::Modern)
+}
+
+fn render_table_with_style(builder: Builder, width: usize, style: InlineTableStyle) -> String {
     let mut table = builder.build();
-    table.with(TableStyle::modern());
+    match style {
+        InlineTableStyle::Modern => table.with(TableStyle::modern_rounded()),
+        InlineTableStyle::Blank => table.with(TableStyle::blank()),
+    };
     table.with(
         Width::wrap(width)
             .keep_words(true)
@@ -559,9 +596,21 @@ fn render_table(builder: Builder, width: usize) -> String {
     table.to_string()
 }
 
+#[cfg(test)]
 fn render_expanded_table(builder: Builder, width: usize) -> String {
+    render_expanded_table_with_style(builder, width, InlineTableStyle::Modern)
+}
+
+fn render_expanded_table_with_style(
+    builder: Builder,
+    width: usize,
+    style: InlineTableStyle,
+) -> String {
     let mut table = builder.build();
-    table.with(TableStyle::modern().remove_horizontals());
+    match style {
+        InlineTableStyle::Modern => table.with(TableStyle::modern_rounded().remove_horizontals()),
+        InlineTableStyle::Blank => table.with(TableStyle::blank()),
+    };
     table.with(
         Width::wrap(width)
             .keep_words(true)
@@ -903,18 +952,20 @@ mod tests {
     }
 
     #[test]
-    fn display_mode_cycles_auto_full_inline() {
+    fn display_mode_cycles_auto_tui_inline_inline_blank() {
         // Given
         let mode = DisplayMode::Auto;
 
         // When
-        let full = mode.next();
-        let inline = full.next();
-        let auto = inline.next();
+        let tui = mode.next();
+        let inline = tui.next();
+        let inline_blank = inline.next();
+        let auto = inline_blank.next();
 
         // Then
-        assert_eq!(full, DisplayMode::Full);
+        assert_eq!(tui, DisplayMode::Tui);
         assert_eq!(inline, DisplayMode::Inline);
+        assert_eq!(inline_blank, DisplayMode::InlineBlank);
         assert_eq!(auto, DisplayMode::Auto);
     }
 
@@ -1005,6 +1056,23 @@ mod tests {
         assert!(table.contains("\u{1b}[90m"));
         assert!(table.contains("\u{1b}[2m"));
         assert!(table.contains("\u{1b}[22m"));
+    }
+
+    #[test]
+    fn blank_display_omits_table_borders() {
+        // Given
+        let mut builder = Builder::new();
+        builder.push_record(["id", "email"]);
+        builder.push_record(["1", "user@example.com"]);
+
+        // When
+        let table = render_table_with_style(builder, 80, InlineTableStyle::Blank);
+
+        // Then
+        assert!(table.contains("id"));
+        assert!(table.contains("email"));
+        assert!(!table.contains('\u{2500}'));
+        assert!(!table.contains('\u{2502}'));
     }
 
     #[test]

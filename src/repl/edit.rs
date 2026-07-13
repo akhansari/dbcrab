@@ -530,7 +530,7 @@ mod tests {
 
         // Then
         assert_eq!(reedline_event, ReedlineEvent::Repaint);
-        assert_eq!(display_mode.get(), DisplayMode::Full);
+        assert_eq!(display_mode.get(), DisplayMode::Tui);
     }
 
     #[test]

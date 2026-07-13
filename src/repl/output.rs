@@ -4,7 +4,10 @@ use crate::{
     config::{KeyRemaps, TuiKeybindings},
     errors::AppResult,
     meta,
-    render::{DisplayMode, ResultGrid, RowsDisplay, grid_display, render_grid, render_row_count},
+    render::{
+        DisplayMode, ResultGrid, RowsDisplay, grid_display, render_grid, render_grid_blank,
+        render_row_count,
+    },
     tui::{show_result_grid, show_result_grid_with_updates},
 };
 use sqlx::PgPool;
@@ -91,8 +94,9 @@ fn grid_rows_display(grid: ResultGrid, display_mode: DisplayMode) -> RowsDisplay
     match display_mode {
         DisplayMode::Auto => grid_display(grid),
         DisplayMode::Inline => RowsDisplay::Inline(render_grid(&grid)),
-        DisplayMode::Full if grid.row_count() == 0 => RowsDisplay::Inline(render_row_count(0)),
-        DisplayMode::Full => RowsDisplay::Tui(grid),
+        DisplayMode::InlineBlank => RowsDisplay::Inline(render_grid_blank(&grid)),
+        DisplayMode::Tui if grid.row_count() == 0 => RowsDisplay::Inline(render_row_count(0)),
+        DisplayMode::Tui => RowsDisplay::Tui(grid),
     }
 }
 

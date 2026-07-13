@@ -6,7 +6,7 @@ use crate::{
     errors::{AppResult, format_query_error},
     render::{
         DisplayMode, ResultGrid, RowsDisplay, render_row_count, render_rows, render_rows_affected,
-        rows_display,
+        render_rows_blank, rows_display,
     },
     sql::{first_keyword, likely_returns_rows},
 };
@@ -68,8 +68,9 @@ fn statement_rows_display(rows: &[PgRow], display_mode: DisplayMode) -> RowsDisp
     match display_mode {
         DisplayMode::Auto => rows_display(rows),
         DisplayMode::Inline => RowsDisplay::Inline(render_rows(rows)),
-        DisplayMode::Full if rows.is_empty() => RowsDisplay::Inline(render_row_count(0)),
-        DisplayMode::Full => RowsDisplay::Tui(ResultGrid::from_rows(rows)),
+        DisplayMode::InlineBlank => RowsDisplay::Inline(render_rows_blank(rows)),
+        DisplayMode::Tui if rows.is_empty() => RowsDisplay::Inline(render_row_count(0)),
+        DisplayMode::Tui => RowsDisplay::Tui(ResultGrid::from_rows(rows)),
     }
 }
 
@@ -108,12 +109,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn full_display_mode_keeps_empty_results_inline() {
+    fn tui_display_mode_keeps_empty_results_inline() {
         // Given
         let rows = [];
 
         // When
-        let display = statement_rows_display(&rows, DisplayMode::Full);
+        let display = statement_rows_display(&rows, DisplayMode::Tui);
 
         // Then
         match display {

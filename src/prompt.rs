@@ -92,14 +92,14 @@ mod tests {
     fn right_prompt_shows_non_auto_display_mode() {
         // Given
         let display_mode = DisplayModeState::new();
-        display_mode.set(DisplayMode::Full);
+        display_mode.set(DisplayMode::Tui);
         let prompt = DbPrompt::new(display_mode);
 
         // When
         let right = prompt.render_prompt_right();
 
         // Then
-        assert_eq!(right, "[full]");
+        assert_eq!(right, "[tui]");
     }
 
     #[test]
