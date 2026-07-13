@@ -89,11 +89,14 @@ Common commands:
 - `privileges`, list explicit object privileges.
 - `describe users`, inspect a database object.
 - `source active_users`, show a function, procedure, or view definition.
+- `export table --name users --output ./users.csv`, export a relation to CSV.
+- `import table --name users --input ./users.csv`, import CSV rows into a table.
 - `quit`, exit DBCrab.
 
 Most list commands accept a filter, for example `tables user`. Some commands can
 include system objects with the `-x` flag, for example `tables pg_catalog -x`.
-Use `help describe` or `help source` for command-specific examples.
+Use `help describe`, `help source`, `help import`, or `help export` for
+command-specific examples.
 
 ### Result Display
 
@@ -138,6 +141,7 @@ Agent SQL execution is read-only by default, uses compact output, returns up to
 100 rows, and applies a 10s statement timeout. Use `dbcrab --help` for overrides
 when needed.
 
+```
 Suggested prompt for `AGENTS.md` or other coding-agent instructions:
 
 ```text

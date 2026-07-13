@@ -110,7 +110,7 @@ where
         .arg(
             Arg::new("allow-write")
                 .long("allow-write")
-                .help("Allow mutating SQL in non-interactive --execute mode")
+                .help("Allow mutating SQL and CSV import in non-interactive modes")
                 .action(ArgAction::SetTrue),
         )
         .arg(

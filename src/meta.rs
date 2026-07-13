@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::{collections::HashSet, path::PathBuf};
 
 use clap::{Arg, ArgAction, ArgGroup, Command};
 use nu_ansi_term::{Color, Style};
@@ -8,7 +8,8 @@ use sqlx::{PgPool, Row};
 use crate::{
     catalog::{Catalog, SharedCatalog, identifier_matches_prefix, quote_identifier},
     errors::{AppError, AppResult},
-    render::ResultGrid,
+    render::{CellValue, ResultGrid},
+    transfer::{self, ExportOptions, ImportOptions, TransferSummary},
 };
 
 const SYSTEM_FLAG: &[&str] = &["-x", "--system"];
@@ -29,6 +30,9 @@ const DESCRIBE_FLAGS: &[&str] = &[
     "--system",
 ];
 const SOURCE_FLAGS: &[&str] = &["-f", "--function", "-v", "--view", "-x", "--system"];
+const IMPORT_FLAGS: &[&str] = &["--name", "--input", "--format", "--no-header"];
+const EXPORT_TABLE_FLAGS: &[&str] = &["--name", "--output", "--format", "--no-header", "--force"];
+const EXPORT_QUERY_FLAGS: &[&str] = &["--sql", "--output", "--format", "--no-header", "--force"];
 const COMMANDS: &[CommandInfo] = &[
     CommandInfo {
         name: "help",
@@ -127,6 +131,20 @@ const COMMANDS: &[CommandInfo] = &[
         description: "Show a function/procedure or view definition",
         flags: "-f --function, -v --view, -x --system, -h --help",
         examples: "source login\nsource auth.login(text, text)\nsource active_users -v",
+    },
+    CommandInfo {
+        name: "import",
+        usage: "import table --name <table> --input <path> [options]",
+        description: "Import a local CSV file into a table",
+        flags: "--name, --input, --format csv, --no-header, -h --help",
+        examples: "import table --name users --input ./users.csv\nimport table --name users --input ./users.data --format csv",
+    },
+    CommandInfo {
+        name: "export",
+        usage: "export table|query [source] --output <path> [options]",
+        description: "Export a relation or read-only query to a local CSV file",
+        flags: "--name, --sql, --output, --format csv, --no-header, --force, -h --help",
+        examples: "export table --name users --output ./users.csv\nexport query --sql \"select * from users where active\" --output ./active.csv",
     },
     CommandInfo {
         name: "quit",
@@ -240,6 +258,18 @@ enum ParsedCommand {
         kind: SourceKindFilter,
         system: bool,
     },
+    ImportTable {
+        target: String,
+        options: ImportOptions,
+    },
+    ExportTable {
+        target: String,
+        options: ExportOptions,
+    },
+    ExportQuery {
+        query: String,
+        options: ExportOptions,
+    },
     Quit,
 }
 
@@ -288,14 +318,21 @@ pub async fn execute_unattended(
     input: &str,
     pool: &PgPool,
     completion_catalog: &SharedCatalog,
+    allow_write: bool,
 ) -> AppResult<CommandOutcome> {
-    execute_with_metadata_mode(input, pool, completion_catalog, MetadataMode::Unattended).await
+    execute_with_metadata_mode(
+        input,
+        pool,
+        completion_catalog,
+        MetadataMode::Unattended { allow_write },
+    )
+    .await
 }
 
 #[derive(Debug, Clone, Copy)]
 enum MetadataMode {
     Interactive,
-    Unattended,
+    Unattended { allow_write: bool },
 }
 
 async fn execute_with_metadata_mode(
@@ -324,6 +361,25 @@ async fn execute_with_metadata_mode(
             kind,
             system,
         } => Ok(output(source_output(pool, &target, kind, system).await?)),
+        ParsedCommand::ImportTable { target, options } => {
+            if matches!(
+                metadata_mode,
+                MetadataMode::Unattended { allow_write: false }
+            ) {
+                return Err(AppError::message(
+                    "non-interactive import requires the top-level --allow-write flag",
+                ));
+            }
+            Ok(output(vec![transfer_section(
+                transfer::import_table(pool, &target, options).await?,
+            )]))
+        }
+        ParsedCommand::ExportTable { target, options } => Ok(output(vec![transfer_section(
+            transfer::export_table(pool, &target, options).await?,
+        )])),
+        ParsedCommand::ExportQuery { query, options } => Ok(output(vec![transfer_section(
+            transfer::export_query(pool, &query, options).await?,
+        )])),
         ParsedCommand::Quit => Ok(CommandOutcome::Exit),
     }
 }
@@ -337,7 +393,7 @@ fn parse_command(input: &str) -> AppResult<ParsedCommand> {
     if input.is_empty() {
         return Ok(ParsedCommand::None);
     }
-    if input.contains(';') {
+    if input.contains(';') && !is_export_query_command(input) {
         return Err(AppError::message(
             "Commands do not use semicolons. Try the command again without `;`.",
         ));
@@ -419,6 +475,8 @@ fn parse_command(input: &str) -> AppResult<ParsedCommand> {
             kind: source_kind(matches),
             system: matches.get_flag("system"),
         }),
+        "import" => parse_import_command(matches),
+        "export" => parse_export_command(matches),
         "quit" => Ok(ParsedCommand::Quit),
         _ => unreachable!("clap only returns configured commands"),
     }
@@ -469,7 +527,119 @@ fn command_spec() -> Command {
                         .multiple(false),
                 ),
         )
+        .subcommand(import_command())
+        .subcommand(export_command())
         .subcommand(Command::new("quit"))
+}
+
+fn import_command() -> Command {
+    Command::new("import").subcommand_required(true).subcommand(
+        Command::new("table")
+            .arg(required_value_arg("name", "name", "TABLE"))
+            .arg(required_value_arg("input", "input", "PATH"))
+            .arg(csv_format_arg())
+            .arg(no_header_arg()),
+    )
+}
+
+fn export_command() -> Command {
+    Command::new("export")
+        .subcommand_required(true)
+        .subcommand(
+            Command::new("table")
+                .arg(required_value_arg("name", "name", "RELATION"))
+                .arg(export_output_arg())
+                .arg(csv_format_arg())
+                .arg(no_header_arg())
+                .arg(force_arg()),
+        )
+        .subcommand(
+            Command::new("query")
+                .arg(required_value_arg("sql", "sql", "SQL"))
+                .arg(export_output_arg())
+                .arg(csv_format_arg())
+                .arg(no_header_arg())
+                .arg(force_arg()),
+        )
+}
+
+fn required_value_arg(id: &'static str, long: &'static str, value_name: &'static str) -> Arg {
+    Arg::new(id)
+        .long(long)
+        .value_name(value_name)
+        .required(true)
+}
+
+fn export_output_arg() -> Arg {
+    required_value_arg("output", "output", "PATH")
+}
+
+fn csv_format_arg() -> Arg {
+    Arg::new("format")
+        .long("format")
+        .value_name("FORMAT")
+        .value_parser(["csv"])
+}
+
+fn no_header_arg() -> Arg {
+    Arg::new("no-header")
+        .long("no-header")
+        .action(ArgAction::SetTrue)
+}
+
+fn force_arg() -> Arg {
+    Arg::new("force").long("force").action(ArgAction::SetTrue)
+}
+
+fn parse_import_command(matches: &clap::ArgMatches) -> AppResult<ParsedCommand> {
+    let Some(("table", matches)) = matches.subcommand() else {
+        return Err(AppError::message("import requires the table subcommand"));
+    };
+    Ok(ParsedCommand::ImportTable {
+        target: required_value(matches, "name")?,
+        options: ImportOptions {
+            input: PathBuf::from(required_value(matches, "input")?),
+            header: !matches.get_flag("no-header"),
+            format_explicit: matches.get_one::<String>("format").is_some(),
+        },
+    })
+}
+
+fn parse_export_command(matches: &clap::ArgMatches) -> AppResult<ParsedCommand> {
+    let Some((kind, matches)) = matches.subcommand() else {
+        return Err(AppError::message(
+            "export requires the table or query subcommand",
+        ));
+    };
+    let options = ExportOptions {
+        output: PathBuf::from(required_value(matches, "output")?),
+        header: !matches.get_flag("no-header"),
+        force: matches.get_flag("force"),
+        format_explicit: matches.get_one::<String>("format").is_some(),
+    };
+    match kind {
+        "table" => Ok(ParsedCommand::ExportTable {
+            target: required_value(matches, "name")?,
+            options,
+        }),
+        "query" => Ok(ParsedCommand::ExportQuery {
+            query: required_value(matches, "sql")?,
+            options,
+        }),
+        _ => Err(AppError::message("unknown export subcommand")),
+    }
+}
+
+fn required_value(matches: &clap::ArgMatches, id: &str) -> AppResult<String> {
+    matches
+        .get_one::<String>(id)
+        .cloned()
+        .ok_or_else(|| AppError::message(format!("missing required --{id}")))
+}
+
+fn is_export_query_command(input: &str) -> bool {
+    let mut words = input.split_whitespace();
+    words.next() == Some("export") && words.next() == Some("query")
 }
 
 fn list_command(name: &'static str) -> Command {
@@ -659,7 +829,7 @@ async fn refresh_output(
 ) -> AppResult<CommandOutcome> {
     let catalog = match metadata_mode {
         MetadataMode::Interactive => Catalog::load(pool).await?,
-        MetadataMode::Unattended => Catalog::load_unattended(pool).await?,
+        MetadataMode::Unattended { .. } => Catalog::load_unattended(pool).await?,
     };
     let summary = catalog.summary();
     *completion_catalog
@@ -904,6 +1074,37 @@ fn section(title: impl Into<String>, grid: ResultGrid) -> MetaSection {
         title: title.into(),
         grid,
     }
+}
+
+fn transfer_section(summary: TransferSummary) -> MetaSection {
+    let rows = vec![vec![
+        CellValue::Text(summary.operation.to_string()),
+        CellValue::Text(summary.source),
+        CellValue::Text(summary.path.display().to_string()),
+        CellValue::Text("csv".to_owned()),
+        CellValue::Text(summary.bytes.to_string()),
+        summary
+            .rows
+            .map_or(CellValue::Null, |rows| CellValue::Text(rows.to_string())),
+        CellValue::Text(summary.elapsed.as_millis().to_string()),
+    ]];
+    section(
+        "Transfer",
+        ResultGrid::from_cells(
+            vec![
+                "operation".to_owned(),
+                "source".to_owned(),
+                "path".to_owned(),
+                "format".to_owned(),
+                "bytes".to_owned(),
+                "rows".to_owned(),
+                "elapsed_ms".to_owned(),
+            ],
+            vec!["text".to_owned(); 7],
+            vec![None; 7],
+            rows,
+        ),
+    )
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1170,6 +1371,9 @@ fn command_suggestions(line: &str, pos: usize, catalog: &SharedCatalog) -> Vec<S
     let span = command_token_span(line, pos);
     let prefix = &line[span.start..span.end];
     let command = line.split_whitespace().next().unwrap_or_default();
+    let words_before = line[..span.start].split_whitespace().collect::<Vec<_>>();
+    let subcommand = words_before.get(1).copied();
+    let previous = words_before.last().copied();
 
     let candidates = if span.start == 0 {
         COMMANDS
@@ -1177,15 +1381,35 @@ fn command_suggestions(line: &str, pos: usize, catalog: &SharedCatalog) -> Vec<S
             .filter(|info| info.name.starts_with(prefix))
             .map(|info| command_suggestion(info.name, info.description, span, true))
             .collect::<Vec<_>>()
+    } else if matches!(command, "import" | "export") && words_before.len() == 1 {
+        transfer_subcommand_suggestions(command, prefix, span)
     } else if prefix.starts_with('-') {
-        flag_suggestions(command, prefix, span)
-    } else if matches!(command, "describe" | "source" | "tables" | "views") {
+        flag_suggestions(command, subcommand, prefix, span)
+    } else if (matches!(command, "import" | "export") && previous == Some("--name"))
+        || matches!(command, "describe" | "source" | "tables" | "views")
+    {
         object_suggestions(prefix, span, catalog)
     } else {
         Vec::new()
     };
 
     dedupe_suggestions(candidates)
+}
+
+fn transfer_subcommand_suggestions(command: &str, prefix: &str, span: Span) -> Vec<Suggestion> {
+    let subcommands: &[(&str, &str)] = match command {
+        "import" => &[("table", "Import CSV rows into a table")],
+        "export" => &[
+            ("table", "Export a relation to CSV"),
+            ("query", "Export a read-only query to CSV"),
+        ],
+        _ => &[],
+    };
+    subcommands
+        .iter()
+        .filter(|(name, _)| name.starts_with(prefix))
+        .map(|(name, description)| command_suggestion(name, description, span, true))
+        .collect()
 }
 
 fn command_token_span(line: &str, pos: usize) -> Span {
@@ -1215,13 +1439,22 @@ fn command_suggestion(
     }
 }
 
-fn flag_suggestions(command: &str, prefix: &str, span: Span) -> Vec<Suggestion> {
-    let flags = match command {
-        "describe" => DESCRIBE_FLAGS,
-        "source" => SOURCE_FLAGS,
-        "schemas" | "extensions" | "tables" | "views" | "functions" | "types" | "privileges" => {
-            SYSTEM_FLAG
-        }
+fn flag_suggestions(
+    command: &str,
+    subcommand: Option<&str>,
+    prefix: &str,
+    span: Span,
+) -> Vec<Suggestion> {
+    let flags = match (command, subcommand) {
+        ("describe", _) => DESCRIBE_FLAGS,
+        ("source", _) => SOURCE_FLAGS,
+        ("import", Some("table")) => IMPORT_FLAGS,
+        ("export", Some("table")) => EXPORT_TABLE_FLAGS,
+        ("export", Some("query")) => EXPORT_QUERY_FLAGS,
+        (
+            "schemas" | "extensions" | "tables" | "views" | "functions" | "types" | "privileges",
+            _,
+        ) => SYSTEM_FLAG,
         _ => &[],
     };
 
@@ -1893,6 +2126,88 @@ order by grantee
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::catalog::shared_catalog;
+
+    #[test]
+    fn parser_accepts_import_table_options() {
+        // Given
+        let input = "import table --name public.users --input ./users.csv --no-header";
+
+        // When
+        let parsed = parse_command(input).expect("import should parse");
+
+        // Then
+        match parsed {
+            ParsedCommand::ImportTable { target, options } => {
+                assert_eq!(target, "public.users");
+                assert_eq!(options.input, PathBuf::from("./users.csv"));
+                assert!(!options.header);
+                assert!(!options.format_explicit);
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parser_accepts_export_query_with_trailing_semicolon() {
+        // Given
+        let input =
+            "export query --sql \"select ';' as separator;\" --output ./separators.csv --force";
+
+        // When
+        let parsed = parse_command(input).expect("export should parse");
+
+        // Then
+        match parsed {
+            ParsedCommand::ExportQuery { query, options } => {
+                assert_eq!(query, "select ';' as separator;");
+                assert_eq!(options.output, PathBuf::from("./separators.csv"));
+                assert!(options.header);
+                assert!(options.force);
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parser_rejects_non_csv_format() {
+        // Given
+        let input = "export table --name users --output users.tsv --format tsv";
+
+        // When
+        let error = parse_command(input).expect_err("TSV should be rejected");
+
+        // Then
+        assert!(error.to_string().contains("invalid value 'tsv'"));
+    }
+
+    #[test]
+    fn completer_suggests_export_subcommands() {
+        // Given
+        let catalog = shared_catalog(Catalog::default());
+        let line = "export q";
+
+        // When
+        let suggestions = command_suggestions(line, line.len(), &catalog);
+
+        // Then
+        assert_eq!(suggestions.len(), 1);
+        assert_eq!(suggestions[0].value, "query");
+    }
+
+    #[test]
+    fn completer_suggests_export_query_flags() {
+        // Given
+        let catalog = shared_catalog(Catalog::default());
+        let line = "export query --s";
+
+        // When
+        let suggestions = command_suggestions(line, line.len(), &catalog);
+
+        // Then
+        assert_eq!(suggestions.len(), 1);
+        assert_eq!(suggestions[0].value, "--sql");
+    }
 
     #[test]
     fn tokenizer_preserves_raw_quoted_identifier() {

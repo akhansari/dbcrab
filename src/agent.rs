@@ -128,9 +128,10 @@ pub async fn execute_command(
     pool: &PgPool,
     catalog: &SharedCatalog,
     command: &str,
+    options: &AgentOptions,
 ) -> AppResult<AgentOutput> {
     let started = Instant::now();
-    let outcome = meta::execute_unattended(command, pool, catalog).await?;
+    let outcome = meta::execute_unattended(command, pool, catalog, !options.read_only).await?;
     let elapsed_ms = started.elapsed().as_millis();
 
     Ok(match outcome {
@@ -170,6 +171,7 @@ pub fn agent_guide() -> &'static str {
 - If truncated=true, narrow the SQL or rerun with --max-rows N.
 - Repair errors from sqlstate, message, detail, hint, friendly_hint, and position.
 - Never use --allow-write unless the user explicitly asks for mutation.
+- Non-interactive CSV import requires --allow-write.
 "#
 }
 

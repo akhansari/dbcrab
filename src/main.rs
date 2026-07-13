@@ -12,6 +12,7 @@ mod prompt;
 mod render;
 mod repl;
 mod sql;
+mod transfer;
 mod tui;
 mod validator;
 
@@ -90,7 +91,7 @@ async fn run() -> AppResult<i32> {
         }
         cli::RunMode::Command { command, options } => {
             let catalog = catalog::shared_catalog(catalog::Catalog::default());
-            match agent::execute_command(&pool, &catalog, &command).await {
+            match agent::execute_command(&pool, &catalog, &command, &options).await {
                 Ok(output) => {
                     print!("{}", agent::render_output(&output, &options));
                     Ok(0)

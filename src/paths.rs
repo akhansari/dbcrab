@@ -1,4 +1,8 @@
-use std::{env, ffi::OsString, path::PathBuf};
+use std::{
+    env,
+    ffi::{OsStr, OsString},
+    path::{Component, Path, PathBuf},
+};
 
 const DEFAULT_HISTORY_FILE: &str = "history";
 
@@ -8,6 +12,30 @@ pub(crate) fn default_config_path() -> Option<PathBuf> {
 
 pub(crate) fn default_history_path(history_context: Option<&str>) -> Option<PathBuf> {
     default_history_path_from_env(history_context, env::var_os)
+}
+
+pub(crate) fn expand_home(path: &Path) -> PathBuf {
+    expand_home_from_env(path, env::var_os, default_path_platform())
+}
+
+fn expand_home_from_env(
+    path: &Path,
+    mut env_var: impl FnMut(&'static str) -> Option<OsString>,
+    platform: UserPathPlatform,
+) -> PathBuf {
+    let mut components = path.components();
+    if components.next() != Some(Component::Normal(OsStr::new("~"))) {
+        return path.to_owned();
+    }
+
+    let home = match platform {
+        UserPathPlatform::Windows => {
+            env_path(env_var("USERPROFILE")).or_else(|| env_path(env_var("HOME")))
+        }
+        UserPathPlatform::Unix => env_path(env_var("HOME")),
+    };
+
+    home.map_or_else(|| path.to_owned(), |home| home.join(components.as_path()))
 }
 
 fn default_config_path_from_env(
@@ -148,6 +176,48 @@ fn env_path(path: Option<OsString>) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn transfer_path_expands_unix_home() {
+        // Given
+        let path = Path::new("~/exports/users.csv");
+        let env_var = |name| (name == "HOME").then(|| OsString::from("/home/alice"));
+
+        // When
+        let expanded = expand_home_from_env(path, env_var, UserPathPlatform::Unix);
+
+        // Then
+        assert_eq!(expanded, PathBuf::from("/home/alice/exports/users.csv"));
+    }
+
+    #[test]
+    fn transfer_path_leaves_tilde_user_literal() {
+        // Given
+        let path = Path::new("~alice/users.csv");
+        let env_var = |_| Some(OsString::from("/home/alice"));
+
+        // When
+        let expanded = expand_home_from_env(path, env_var, UserPathPlatform::Unix);
+
+        // Then
+        assert_eq!(expanded, path);
+    }
+
+    #[test]
+    fn transfer_path_uses_windows_user_profile() {
+        // Given
+        let path = Path::new("~/exports/users.csv");
+        let env_var = |name| (name == "USERPROFILE").then(|| OsString::from("C:\\Users\\Alice"));
+
+        // When
+        let expanded = expand_home_from_env(path, env_var, UserPathPlatform::Windows);
+
+        // Then
+        assert_eq!(
+            expanded,
+            PathBuf::from("C:\\Users\\Alice").join("exports/users.csv")
+        );
+    }
 
     #[test]
     fn config_path_prefers_xdg_config_home() {
