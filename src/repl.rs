@@ -1,7 +1,7 @@
 mod edit;
 mod history;
 mod output;
-mod query;
+mod statement;
 
 use std::{
     io,
@@ -39,7 +39,7 @@ use self::{
     edit::{CommandEditMode, SqlEditMode, command_inner_edit_mode, sql_inner_edit_mode},
     history::{HISTORY_LIMIT, persistent_history},
     output::render_meta_output,
-    query::execute_statement,
+    statement::execute_statement,
 };
 
 const COMPLETION_MENU: &str = "completion_menu";

@@ -435,7 +435,7 @@ fn render_rows_with_style(rows: &[PgRow], style: InlineTableStyle) -> String {
     let mut output = String::new();
     if rows.len() > LARGE_RESULT_WARNING_ROWS {
         output.push_str(&format!(
-            "warning: rendering {} rows; add LIMIT for large exploratory queries\n",
+            "warning: rendering {} rows; narrow the statement's result set when possible\n",
             rows.len()
         ));
     }

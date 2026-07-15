@@ -5,7 +5,7 @@ use sqlx::{AssertSqlSafe, PgPool};
 
 use crate::{
     catalog::{Catalog, SharedCatalog},
-    errors::{AppError, AppResult, query_error_details},
+    errors::{AppError, AppResult, sql_error_details},
     meta::{self, CommandOutcome, MetaOutput, MetaSection},
     render::{CellValue, ResultGrid},
     sql::{is_read_only_statement, likely_returns_rows, split_complete_statements},
@@ -53,6 +53,7 @@ impl Default for AgentOptions {
 pub enum AgentOutput {
     Statement(AgentStatementOutput),
     Meta(AgentMetaOutput),
+    Status { elapsed_ms: u128, status: String },
 }
 
 #[derive(Debug, Clone)]
@@ -65,7 +66,6 @@ pub struct AgentStatementOutput {
 enum AgentStatementResult {
     Rows(ResultGrid),
     RowsAffected { rows_affected: u64 },
-    Status { status: String },
 }
 
 #[derive(Debug, Clone)]
@@ -176,12 +176,10 @@ pub fn agent_guide() -> &'static str {
 }
 
 fn status_output(elapsed_ms: u128, status: impl Into<String>) -> AgentOutput {
-    AgentOutput::Statement(AgentStatementOutput {
+    AgentOutput::Status {
         elapsed_ms,
-        result: AgentStatementResult::Status {
-            status: status.into(),
-        },
-    })
+        status: status.into(),
+    }
 }
 
 fn single_statement(input: &str) -> AppResult<String> {
@@ -202,6 +200,12 @@ fn render_output_compact(output: &AgentOutput, max_rows: usize) -> String {
     match output {
         AgentOutput::Statement(statement) => render_statement_compact(statement, max_rows),
         AgentOutput::Meta(meta) => render_meta_compact(meta, max_rows),
+        AgentOutput::Status { elapsed_ms, status } => {
+            format!(
+                "ok status={} elapsed_ms={elapsed_ms}\n",
+                compact_header_value(status)
+            )
+        }
     }
 }
 
@@ -212,11 +216,6 @@ fn render_statement_compact(output: &AgentStatementOutput, max_rows: usize) -> S
         }
         AgentStatementResult::RowsAffected { rows_affected } => format!(
             "ok rows_affected={rows_affected} elapsed_ms={}\n",
-            output.elapsed_ms
-        ),
-        AgentStatementResult::Status { status } => format!(
-            "ok status={} elapsed_ms={}\n",
-            compact_header_value(status),
             output.elapsed_ms
         ),
     }
@@ -291,6 +290,12 @@ fn render_output_column_json(output: &AgentOutput, max_rows: usize) -> String {
     match output {
         AgentOutput::Statement(statement) => render_statement_column_json(statement, max_rows),
         AgentOutput::Meta(meta) => render_meta_column_json(meta, max_rows),
+        AgentOutput::Status { elapsed_ms, status } => format_json_line(json!({
+            "ok": true,
+            "kind": "status",
+            "status": status,
+            "elapsed_ms": elapsed_ms,
+        })),
     }
 }
 
@@ -301,12 +306,6 @@ fn render_statement_column_json(output: &AgentStatementOutput, max_rows: usize) 
             "ok": true,
             "kind": "rows_affected",
             "rows_affected": rows_affected,
-            "elapsed_ms": output.elapsed_ms,
-        }),
-        AgentStatementResult::Status { status } => json!({
-            "ok": true,
-            "kind": "status",
-            "status": status,
             "elapsed_ms": output.elapsed_ms,
         }),
     };
@@ -397,7 +396,7 @@ fn render_error_compact(
 ) -> String {
     match err {
         AppError::Sqlx(err) => {
-            if let Some(details) = query_error_details(err, statement, catalog) {
+            if let Some(details) = sql_error_details(err, statement, catalog) {
                 let mut rendered = format!(
                     "error sqlstate={} severity={} message={}\n",
                     compact_header_value(&details.sqlstate),
@@ -434,7 +433,7 @@ fn render_error_column_json(
     catalog: Option<&Catalog>,
 ) -> String {
     let error = match err {
-        AppError::Sqlx(err) => query_error_details(err, statement, catalog).map_or_else(
+        AppError::Sqlx(err) => sql_error_details(err, statement, catalog).map_or_else(
             || json!({ "message": err.to_string() }),
             |details| {
                 json!({
@@ -591,6 +590,30 @@ mod tests {
 
         // Then
         assert_eq!(rendered, "ok status=OK elapsed_ms=4\n");
+    }
+
+    #[test]
+    fn column_json_result_keeps_meta_command_status() {
+        // Given
+        let output = status_output(4, "OK");
+        let options = AgentOptions {
+            format: AgentFormat::ColumnJson,
+            ..AgentOptions::default()
+        };
+
+        // When
+        let rendered = render_output(&output, &options);
+
+        // Then
+        assert_eq!(
+            serde_json::from_str::<Value>(&rendered).expect("column JSON should parse"),
+            json!({
+                "ok": true,
+                "kind": "status",
+                "status": "OK",
+                "elapsed_ms": 4,
+            })
+        );
     }
 
     #[test]

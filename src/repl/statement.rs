@@ -3,7 +3,7 @@ use sqlx::{AssertSqlSafe, PgPool, postgres::PgRow};
 use crate::{
     catalog::SharedCatalog,
     config::{KeyRemaps, TuiKeybindings},
-    errors::{AppResult, format_query_error},
+    errors::{AppResult, format_sql_error},
     render::{
         DisplayMode, ResultGrid, RowsDisplay, render_row_count, render_rows, render_rows_affected,
         render_rows_blank, rows_display,
@@ -35,7 +35,7 @@ pub(super) async fn execute_statement(
                     add_update_metadata(statement_rows_display(&rows, display_mode), pool).await?;
                 print_rows_display(display, tui_keybindings, key_remaps, Some(pool)).await?;
             }
-            Err(err) => print_query_error(&err, statement, catalog),
+            Err(err) => print_statement_error(&err, statement, catalog),
         }
     } else {
         match sqlx::query(AssertSqlSafe(statement.to_owned()))
@@ -46,21 +46,21 @@ pub(super) async fn execute_statement(
                 "{}",
                 render_statement_status(statement, result.rows_affected())
             ),
-            Err(err) => print_query_error(&err, statement, catalog),
+            Err(err) => print_statement_error(&err, statement, catalog),
         }
     }
 
     Ok(())
 }
 
-fn print_query_error(err: &sqlx::Error, statement: &str, catalog: &SharedCatalog) {
+fn print_statement_error(err: &sqlx::Error, statement: &str, catalog: &SharedCatalog) {
     eprintln!("{}", format_statement_error(err, statement, catalog));
 }
 
 fn format_statement_error(err: &sqlx::Error, statement: &str, catalog: &SharedCatalog) -> String {
     catalog.read().map_or_else(
-        |_| format_query_error(err, Some(statement), None),
-        |catalog| format_query_error(err, Some(statement), Some(&catalog)),
+        |_| format_sql_error(err, Some(statement), None),
+        |catalog| format_sql_error(err, Some(statement), Some(&catalog)),
     )
 }
 

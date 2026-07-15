@@ -14,18 +14,18 @@ pub enum AppError {
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
-pub struct QueryErrorDetails {
+pub struct SqlErrorDetails {
     pub severity: String,
     pub sqlstate: String,
     pub message: String,
     pub detail: Option<String>,
     pub hint: Option<String>,
     pub friendly_hint: Option<String>,
-    pub position: Option<QueryErrorPosition>,
+    pub position: Option<SqlErrorPosition>,
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
-pub struct QueryErrorPosition {
+pub struct SqlErrorPosition {
     pub line: usize,
     pub column: usize,
 }
@@ -40,7 +40,7 @@ impl fmt::Display for AppError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Io(err) => write!(f, "I/O error: {err}"),
-            Self::Sqlx(err) => f.write_str(&format_query_error(err, None, None)),
+            Self::Sqlx(err) => f.write_str(&format_sql_error(err, None, None)),
             Self::Message(message) => f.write_str(message),
         }
     }
@@ -66,11 +66,7 @@ impl From<reedline::ReedlineError> for AppError {
     }
 }
 
-pub fn format_query_error(
-    err: &sqlx::Error,
-    sql: Option<&str>,
-    catalog: Option<&Catalog>,
-) -> String {
+pub fn format_sql_error(err: &sqlx::Error, sql: Option<&str>, catalog: Option<&Catalog>) -> String {
     let Some(pg) = pg_error(err) else {
         return err.to_string();
     };
@@ -86,8 +82,8 @@ pub fn format_query_error(
         lines.push(format!("detail: {detail}"));
     }
 
-    if let Some(query) = sql
-        && let Some(caret) = error_caret(query, pg.position())
+    if let Some(sql) = sql
+        && let Some(caret) = error_caret(sql, pg.position())
     {
         lines.push(caret);
     }
@@ -103,21 +99,21 @@ pub fn format_query_error(
     lines.join("\n")
 }
 
-pub fn query_error_details(
+pub fn sql_error_details(
     err: &sqlx::Error,
     sql: Option<&str>,
     catalog: Option<&Catalog>,
-) -> Option<QueryErrorDetails> {
+) -> Option<SqlErrorDetails> {
     let pg = pg_error(err)?;
 
-    Some(QueryErrorDetails {
+    Some(SqlErrorDetails {
         severity: format!("{:?}", pg.severity()).to_ascii_lowercase(),
         sqlstate: pg.code().to_owned(),
         message: pg.message().to_owned(),
         detail: pg.detail().map(str::to_owned),
         hint: pg.hint().map(str::to_owned),
         friendly_hint: friendly_hint(pg, catalog),
-        position: sql.and_then(|query| error_position(query, pg.position())),
+        position: sql.and_then(|sql| error_position(sql, pg.position())),
     })
 }
 
@@ -184,7 +180,7 @@ pub fn error_caret(sql: &str, position: Option<PgErrorPosition<'_>>) -> Option<S
 pub fn error_position(
     sql: &str,
     position: Option<PgErrorPosition<'_>>,
-) -> Option<QueryErrorPosition> {
+) -> Option<SqlErrorPosition> {
     let position = original_error_position(position)?;
     let target = position.saturating_sub(1);
     let mut char_index = 0;
@@ -192,7 +188,7 @@ pub fn error_position(
     for (line_index, line) in sql.lines().enumerate() {
         let line_len = line.chars().count();
         if target <= char_index + line_len {
-            return Some(QueryErrorPosition {
+            return Some(SqlErrorPosition {
                 line: line_index + 1,
                 column: target.saturating_sub(char_index) + 1,
             });
@@ -215,7 +211,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn error_caret_points_to_original_query_position() {
+    fn error_caret_points_to_original_sql_position() {
         // Given
         let sql = "select *\nfrom missing";
 
@@ -235,7 +231,7 @@ mod tests {
         let position = error_position(sql, Some(PgErrorPosition::Original(15)));
 
         // Then
-        assert_eq!(position, Some(QueryErrorPosition { line: 2, column: 6 }));
+        assert_eq!(position, Some(SqlErrorPosition { line: 2, column: 6 }));
     }
 
     #[test]

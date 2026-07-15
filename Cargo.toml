@@ -7,6 +7,9 @@ license = "AGPL-3.0-or-later"
 repository = "https://codeberg.org/akhansari/dbcrab"
 homepage = "https://codeberg.org/akhansari/dbcrab"
 readme = "README.md"
+categories = ["database", "command-line-utilities"]
+keywords = ["database-management", "postgres", "repl", "tui"]
+authors = ["Amin Khansari"]
 
 [dependencies]
 ansitok = "0.3.0"
