@@ -15,7 +15,6 @@ use crate::{
     render::ResultGrid,
 };
 
-mod ansi;
 mod edit;
 mod preview;
 mod render;

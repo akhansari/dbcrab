@@ -1,8 +1,7 @@
+use ansi_to_tui::IntoText as _;
 use ratatui::text::Text;
 
 use crate::render::format_json_value;
-
-use super::ansi::ansi_to_text;
 
 #[derive(Debug, Clone)]
 pub(super) struct PreviewContent {
@@ -41,8 +40,9 @@ fn wrapped_line_count(text: &Text<'_>, width: u16) -> usize {
 pub(super) fn preview_text(value: &str, type_name: &str) -> Text<'static> {
     if is_json_type(type_name)
         && let Ok(json) = serde_json::from_str(value)
+        && let Ok(text) = format_json_value(json).into_text()
     {
-        return ansi_to_text(&format_json_value(json));
+        return text;
     }
 
     Text::from(value.to_owned())
