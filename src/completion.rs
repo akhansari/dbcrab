@@ -217,6 +217,30 @@ struct TableReferences {
     visible: Vec<TableRef>,
 }
 
+pub(crate) fn referenced_relations(
+    sql: &str,
+    qualifier: Option<&str>,
+) -> Vec<(Option<String>, String)> {
+    let references = extract_table_references(&significant_tokens(sql));
+
+    qualifier.map_or_else(
+        || {
+            references
+                .visible
+                .into_iter()
+                .map(|table_ref| (table_ref.schema, table_ref.table))
+                .collect()
+        },
+        |qualifier| {
+            references
+                .aliases
+                .get(&alias_key(qualifier))
+                .map(|table_ref| vec![(table_ref.schema.clone(), table_ref.table.clone())])
+                .unwrap_or_default()
+        },
+    )
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CompletionContext {
     Relation,

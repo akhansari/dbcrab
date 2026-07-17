@@ -134,11 +134,6 @@ impl Catalog {
         let relation_names = self.tables.iter().map(|table| table.name.as_str());
         closest_name(name, relation_names)
     }
-
-    pub fn closest_column(&self, name: &str) -> Option<String> {
-        let column_names = self.columns.iter().map(|column| column.name.as_str());
-        closest_name(name, column_names)
-    }
 }
 
 pub fn shared_catalog(catalog: Catalog) -> SharedCatalog {
@@ -311,20 +306,31 @@ fn confirm_metadata_load(relation_count: i64) -> io::Result<bool> {
     ))
 }
 
-fn closest_name<'a>(target: &str, candidates: impl Iterator<Item = &'a str>) -> Option<String> {
+pub(crate) fn closest_name<'a>(
+    target: &str,
+    candidates: impl Iterator<Item = &'a str>,
+) -> Option<String> {
     let target = target.to_ascii_lowercase();
     let mut best: Option<(&str, usize)> = None;
+    let mut tied = false;
 
     for candidate in candidates {
         let distance = levenshtein(&target, &candidate.to_ascii_lowercase());
-        if best.is_none_or(|(_, best_distance)| distance < best_distance) {
-            best = Some((candidate, distance));
+        match best {
+            Some((best_candidate, best_distance)) if distance == best_distance => {
+                tied |= !candidate.eq_ignore_ascii_case(best_candidate);
+            }
+            Some((_, best_distance)) if distance > best_distance => {}
+            _ => {
+                best = Some((candidate, distance));
+                tied = false;
+            }
         }
     }
 
     let (candidate, distance) = best?;
-    let threshold = 3.max(target.len() / 3);
-    (distance <= threshold).then(|| candidate.to_owned())
+    let threshold = target.chars().count().div_ceil(3).clamp(1, 3);
+    (!tied && distance <= threshold).then(|| candidate.to_owned())
 }
 
 fn levenshtein(left: &str, right: &str) -> usize {
@@ -416,5 +422,52 @@ mod tests {
 
         // Then
         assert_eq!(suggestion.as_deref(), Some("customers"));
+    }
+
+    #[test]
+    fn closest_relation_rejects_weak_match_for_short_name() {
+        // Given
+        let catalog = Catalog::from_parts(
+            vec!["public".into()],
+            vec![TableInfo {
+                schema: "public".into(),
+                name: "users".into(),
+                kind: "r".into(),
+            }],
+            vec![],
+        );
+
+        // When
+        let suggestion = catalog.closest_relation("usr");
+
+        // Then
+        assert_eq!(suggestion, None);
+    }
+
+    #[test]
+    fn closest_relation_rejects_equally_close_matches() {
+        // Given
+        let catalog = Catalog::from_parts(
+            vec!["public".into()],
+            vec![
+                TableInfo {
+                    schema: "public".into(),
+                    name: "name".into(),
+                    kind: "r".into(),
+                },
+                TableInfo {
+                    schema: "public".into(),
+                    name: "game".into(),
+                    kind: "r".into(),
+                },
+            ],
+            vec![],
+        );
+
+        // When
+        let suggestion = catalog.closest_relation("fame");
+
+        // Then
+        assert_eq!(suggestion, None);
     }
 }

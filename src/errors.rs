@@ -3,7 +3,10 @@ use std::{error::Error, fmt, io};
 use nu_ansi_term::{Color, Style};
 use sqlx::postgres::{PgDatabaseError, PgErrorPosition};
 
-use crate::catalog::Catalog;
+use crate::{
+    catalog::{Catalog, closest_name, quote_identifier},
+    completion::referenced_relations,
+};
 
 pub type AppResult<T> = Result<T, AppError>;
 
@@ -165,9 +168,13 @@ pub fn sql_error_details(
         message: pg.message().to_owned(),
         detail: pg.detail().map(str::to_owned),
         hint: pg.hint().map(str::to_owned),
-        friendly_hint: friendly_hint(pg, catalog),
+        friendly_hint: client_help(pg.code(), pg.message(), pg.hint(), sql, catalog),
         position: sql.and_then(|sql| error_position(sql, pg.position())),
     })
+}
+
+pub fn sql_error_needs_catalog(err: &sqlx::Error, sql: Option<&str>) -> bool {
+    pg_error(err).is_some_and(|pg| client_help_needs_catalog(pg.code(), pg.hint(), sql.is_some()))
 }
 
 fn pg_error(err: &sqlx::Error) -> Option<&PgDatabaseError> {
@@ -175,35 +182,105 @@ fn pg_error(err: &sqlx::Error) -> Option<&PgDatabaseError> {
         .and_then(|db| db.as_error().downcast_ref::<PgDatabaseError>())
 }
 
-fn friendly_hint(pg: &PgDatabaseError, catalog: Option<&Catalog>) -> Option<String> {
-    match pg.code() {
-        "28P01" => Some("password authentication failed; check the password or pg_hba.conf".into()),
-        "3D000" => Some(
-            "database does not exist; verify the database name in the connection string".into(),
-        ),
-        "42601" => Some("syntax error; check nearby punctuation, keywords, and parentheses".into()),
-        "42P01" => undefined_relation_hint(pg.message(), catalog),
-        "42703" => undefined_column_hint(pg.message(), catalog),
+fn client_help(
+    sqlstate: &str,
+    message: &str,
+    server_hint: Option<&str>,
+    sql: Option<&str>,
+    catalog: Option<&Catalog>,
+) -> Option<String> {
+    if server_hint.is_some() {
+        return None;
+    }
+
+    match sqlstate {
+        "28P01" => {
+            Some("Check the password for the requested user in the connection settings.".into())
+        }
+        "3D000" => Some("Check the database name in the connection string.".into()),
+        "42P01" => undefined_relation_hint(message, catalog),
+        "42703" => undefined_column_hint(message, sql, catalog),
         _ => None,
     }
 }
 
-fn undefined_relation_hint(message: &str, catalog: Option<&Catalog>) -> Option<String> {
-    let name = first_quoted_fragment(message)?;
-    let suggestion = catalog.and_then(|catalog| catalog.closest_relation(&name));
-    Some(match suggestion {
-        Some(relation) => format!("relation `{name}` was not found; did you mean `{relation}`?"),
-        None => format!("relation `{name}` was not found; check schema qualification and spelling"),
-    })
+fn client_help_needs_catalog(sqlstate: &str, server_hint: Option<&str>, has_sql: bool) -> bool {
+    server_hint.is_none() && matches!((sqlstate, has_sql), ("42P01", _) | ("42703", true))
 }
 
-fn undefined_column_hint(message: &str, catalog: Option<&Catalog>) -> Option<String> {
-    let name = first_quoted_fragment(message)?;
-    let suggestion = catalog.and_then(|catalog| catalog.closest_column(&name));
-    Some(match suggestion {
-        Some(column) => format!("column `{name}` was not found; did you mean `{column}`?"),
-        None => format!("column `{name}` was not found; check the selected table or alias"),
-    })
+fn undefined_relation_hint(message: &str, catalog: Option<&Catalog>) -> Option<String> {
+    let catalog = catalog?;
+    let object_name = first_quoted_fragment(message)?;
+    let (schema, name) = split_qualified_name(&object_name);
+    let candidates = schema.map_or_else(
+        || catalog.tables().iter().collect::<Vec<_>>(),
+        |schema| catalog.tables_in_schema(schema),
+    );
+    let relation = schema.map_or_else(
+        || catalog.closest_relation(name),
+        |_| closest_name(name, candidates.iter().map(|table| table.name.as_str())),
+    )?;
+    let mut matches = candidates
+        .into_iter()
+        .filter(|table| table.name == relation);
+    let table = matches.next()?;
+    if matches.next().is_some() {
+        return None;
+    }
+
+    let suggestion = format!(
+        "{}.{}",
+        quote_identifier(&table.schema),
+        quote_identifier(&table.name)
+    );
+
+    Some(format!("Did you mean `{suggestion}`?"))
+}
+
+fn undefined_column_hint(
+    message: &str,
+    sql: Option<&str>,
+    catalog: Option<&Catalog>,
+) -> Option<String> {
+    let catalog = catalog?;
+    let object_name = first_quoted_fragment(message)?;
+    let (qualifier, name) = split_qualified_name(&object_name);
+    let relations = referenced_relations(sql?, qualifier);
+    let suggestion = closest_name(
+        name,
+        relations.iter().flat_map(|(schema, table)| {
+            catalog
+                .columns_for_table(schema.as_deref(), table)
+                .into_iter()
+                .map(|column| column.name.as_str())
+        }),
+    )?;
+
+    if qualifier.is_none()
+        && relations
+            .iter()
+            .filter(|(schema, table)| {
+                catalog
+                    .columns_for_table(schema.as_deref(), table)
+                    .iter()
+                    .any(|column| column.name == suggestion)
+            })
+            .count()
+            > 1
+    {
+        return None;
+    }
+
+    let column = quote_identifier(&suggestion);
+    let suggestion = qualifier.map_or(column.clone(), |qualifier| {
+        format!("{}.{column}", quote_identifier(qualifier))
+    });
+    Some(format!("Did you mean `{suggestion}`?"))
+}
+
+fn split_qualified_name(name: &str) -> (Option<&str>, &str) {
+    name.rsplit_once('.')
+        .map_or((None, name), |(qualifier, name)| (Some(qualifier), name))
 }
 
 fn first_quoted_fragment(message: &str) -> Option<String> {
@@ -261,6 +338,39 @@ fn format_error_caret(sql: &str, position: SqlErrorPosition, color: bool) -> Opt
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::catalog::{ColumnInfo, TableInfo};
+
+    fn catalog_with_users_and_orders() -> Catalog {
+        Catalog::from_parts(
+            vec!["public".into()],
+            vec![
+                TableInfo {
+                    schema: "public".into(),
+                    name: "users".into(),
+                    kind: "r".into(),
+                },
+                TableInfo {
+                    schema: "public".into(),
+                    name: "orders".into(),
+                    kind: "r".into(),
+                },
+            ],
+            vec![
+                ColumnInfo {
+                    schema: "public".into(),
+                    table: "users".into(),
+                    name: "username".into(),
+                    data_type: "text".into(),
+                },
+                ColumnInfo {
+                    schema: "public".into(),
+                    table: "orders".into(),
+                    name: "usernmex".into(),
+                    data_type: "text".into(),
+                },
+            ],
+        )
+    }
 
     fn test_sql_error_details() -> SqlErrorDetails {
         SqlErrorDetails {
@@ -319,6 +429,281 @@ mod tests {
                 "help: Did you mean `customers`?",
             )
         );
+    }
+
+    #[test]
+    fn client_help_defers_to_postgres_hint() {
+        // Given
+        let catalog = catalog_with_users_and_orders();
+
+        // When
+        let help = client_help(
+            "42703",
+            "column \"usernme\" does not exist",
+            Some("Perhaps you meant column \"users.username\"."),
+            Some("select usernme from users"),
+            Some(&catalog),
+        );
+
+        // Then
+        assert_eq!(help, None);
+    }
+
+    #[test]
+    fn client_help_scopes_column_suggestion_to_referenced_table() {
+        // Given
+        let catalog = catalog_with_users_and_orders();
+
+        // When
+        let help = client_help(
+            "42703",
+            "column \"usernme\" does not exist",
+            None,
+            Some("select usernme from users"),
+            Some(&catalog),
+        );
+
+        // Then
+        assert_eq!(help.as_deref(), Some("Did you mean `username`?"));
+    }
+
+    #[test]
+    fn client_help_preserves_column_alias_in_suggestion() {
+        // Given
+        let catalog = catalog_with_users_and_orders();
+
+        // When
+        let help = client_help(
+            "42703",
+            "column \"u.usernme\" does not exist",
+            None,
+            Some("select u.usernme from users u"),
+            Some(&catalog),
+        );
+
+        // Then
+        assert_eq!(help.as_deref(), Some("Did you mean `u.username`?"));
+    }
+
+    #[test]
+    fn client_help_suppresses_ambiguous_column_suggestion() {
+        // Given
+        let catalog = Catalog::from_parts(
+            vec!["public".into()],
+            vec![
+                TableInfo {
+                    schema: "public".into(),
+                    name: "users".into(),
+                    kind: "r".into(),
+                },
+                TableInfo {
+                    schema: "public".into(),
+                    name: "profiles".into(),
+                    kind: "r".into(),
+                },
+            ],
+            vec![
+                ColumnInfo {
+                    schema: "public".into(),
+                    table: "users".into(),
+                    name: "username".into(),
+                    data_type: "text".into(),
+                },
+                ColumnInfo {
+                    schema: "public".into(),
+                    table: "profiles".into(),
+                    name: "username".into(),
+                    data_type: "text".into(),
+                },
+            ],
+        );
+
+        // When
+        let help = client_help(
+            "42703",
+            "column \"usernme\" does not exist",
+            None,
+            Some("select usernme from users join profiles on true"),
+            Some(&catalog),
+        );
+
+        // Then
+        assert_eq!(help, None);
+    }
+
+    #[test]
+    fn client_help_scopes_relation_suggestion_to_explicit_schema() {
+        // Given
+        let catalog = Catalog::from_parts(
+            vec!["public".into(), "archive".into()],
+            vec![
+                TableInfo {
+                    schema: "public".into(),
+                    name: "customers".into(),
+                    kind: "r".into(),
+                },
+                TableInfo {
+                    schema: "archive".into(),
+                    name: "customres".into(),
+                    kind: "r".into(),
+                },
+            ],
+            vec![],
+        );
+
+        // When
+        let help = client_help(
+            "42P01",
+            "relation \"public.customres\" does not exist",
+            None,
+            Some("select * from public.customres"),
+            Some(&catalog),
+        );
+
+        // Then
+        assert_eq!(help.as_deref(), Some("Did you mean `public.customers`?"));
+    }
+
+    #[test]
+    fn client_help_qualifies_unqualified_relation_suggestion() {
+        // Given
+        let catalog = Catalog::from_parts(
+            vec!["public".into()],
+            vec![TableInfo {
+                schema: "public".into(),
+                name: "customers".into(),
+                kind: "r".into(),
+            }],
+            vec![],
+        );
+
+        // When
+        let help = client_help(
+            "42P01",
+            "relation \"customres\" does not exist",
+            None,
+            Some("select * from customres"),
+            Some(&catalog),
+        );
+
+        // Then
+        assert_eq!(help.as_deref(), Some("Did you mean `public.customers`?"));
+    }
+
+    #[test]
+    fn client_help_suppresses_relation_suggestion_across_schemas() {
+        // Given
+        let catalog = Catalog::from_parts(
+            vec!["public".into(), "archive".into()],
+            vec![
+                TableInfo {
+                    schema: "public".into(),
+                    name: "customers".into(),
+                    kind: "r".into(),
+                },
+                TableInfo {
+                    schema: "archive".into(),
+                    name: "customers".into(),
+                    kind: "r".into(),
+                },
+            ],
+            vec![],
+        );
+
+        // When
+        let help = client_help(
+            "42P01",
+            "relation \"customres\" does not exist",
+            None,
+            Some("select * from customres"),
+            Some(&catalog),
+        );
+
+        // Then
+        assert_eq!(help, None);
+    }
+
+    #[test]
+    fn client_help_quotes_relation_suggestion() {
+        // Given
+        let catalog = Catalog::from_parts(
+            vec!["Sales Data".into()],
+            vec![TableInfo {
+                schema: "Sales Data".into(),
+                name: "Order Items".into(),
+                kind: "r".into(),
+            }],
+            vec![],
+        );
+
+        // When
+        let help = client_help(
+            "42P01",
+            "relation \"Sales Data.Order Itms\" does not exist",
+            None,
+            Some("select * from \"Sales Data\".\"Order Itms\""),
+            Some(&catalog),
+        );
+
+        // Then
+        assert_eq!(
+            help.as_deref(),
+            Some("Did you mean `\"Sales Data\".\"Order Items\"`?")
+        );
+    }
+
+    #[test]
+    fn relation_help_can_use_catalog_without_sql() {
+        // Given
+        let sqlstate = "42P01";
+
+        // When
+        let needs_catalog = client_help_needs_catalog(sqlstate, None, false);
+
+        // Then
+        assert!(needs_catalog);
+    }
+
+    #[test]
+    fn column_help_requires_sql_before_loading_catalog() {
+        // Given
+        let sqlstate = "42703";
+
+        // When
+        let needs_catalog = client_help_needs_catalog(sqlstate, None, false);
+
+        // Then
+        assert!(!needs_catalog);
+    }
+
+    #[test]
+    fn postgres_hint_prevents_catalog_loading() {
+        // Given
+        let postgres_hint = Some("Use another name.");
+
+        // When
+        let needs_catalog = client_help_needs_catalog("42P01", postgres_hint, true);
+
+        // Then
+        assert!(!needs_catalog);
+    }
+
+    #[test]
+    fn client_help_omits_generic_syntax_advice() {
+        // Given
+        let sqlstate = "42601";
+
+        // When
+        let help = client_help(
+            sqlstate,
+            "syntax error at or near \"form\"",
+            None,
+            Some("select * form users"),
+            None,
+        );
+
+        // Then
+        assert_eq!(help, None);
     }
 
     #[test]

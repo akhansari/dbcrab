@@ -112,7 +112,10 @@ async fn print_agent_error_with_lazy_catalog(
     format: agent::AgentFormat,
 ) {
     let catalog = match err {
-        AppError::Sqlx(_) => catalog::Catalog::load_unattended(pool).await.ok(),
+        AppError::Sqlx(err) if errors::sql_error_needs_catalog(err, statement) => {
+            catalog::Catalog::load_unattended(pool).await.ok()
+        }
+        AppError::Sqlx(_) => None,
         AppError::Io(_) | AppError::Message(_) => None,
     };
     print!(
