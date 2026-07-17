@@ -1,9 +1,11 @@
+use std::io::{self, IsTerminal};
+
 use sqlx::{AssertSqlSafe, PgPool, postgres::PgRow};
 
 use crate::{
     catalog::SharedCatalog,
     config::{KeyRemaps, TuiKeybindings},
-    errors::{AppResult, format_sql_error},
+    errors::{AppResult, format_colored_sql_error, format_sql_error},
     render::{
         DisplayMode, ResultGrid, RowsDisplay, render_row_count, render_rows, render_rows_affected,
         render_rows_blank, rows_display,
@@ -58,9 +60,14 @@ fn print_statement_error(err: &sqlx::Error, statement: &str, catalog: &SharedCat
 }
 
 fn format_statement_error(err: &sqlx::Error, statement: &str, catalog: &SharedCatalog) -> String {
+    let formatter = if io::stderr().is_terminal() {
+        format_colored_sql_error
+    } else {
+        format_sql_error
+    };
     catalog.read().map_or_else(
-        |_| format_sql_error(err, Some(statement), None),
-        |catalog| format_sql_error(err, Some(statement), Some(&catalog)),
+        |_| formatter(err, Some(statement), None),
+        |catalog| formatter(err, Some(statement), Some(&catalog)),
     )
 }
 

@@ -1,5 +1,6 @@
 use std::{error::Error, fmt, io};
 
+use nu_ansi_term::{Color, Style};
 use sqlx::postgres::{PgDatabaseError, PgErrorPosition};
 
 use crate::catalog::Catalog;
@@ -67,33 +68,85 @@ impl From<reedline::ReedlineError> for AppError {
 }
 
 pub fn format_sql_error(err: &sqlx::Error, sql: Option<&str>, catalog: Option<&Catalog>) -> String {
-    let Some(pg) = pg_error(err) else {
-        return err.to_string();
+    format_sql_error_with_color(err, sql, catalog, false)
+}
+
+pub fn format_colored_sql_error(
+    err: &sqlx::Error,
+    sql: Option<&str>,
+    catalog: Option<&Catalog>,
+) -> String {
+    format_sql_error_with_color(err, sql, catalog, true)
+}
+
+fn format_sql_error_with_color(
+    err: &sqlx::Error,
+    sql: Option<&str>,
+    catalog: Option<&Catalog>,
+    color: bool,
+) -> String {
+    let Some(details) = sql_error_details(err, sql, catalog) else {
+        return if color {
+            format!(
+                "{} {err}",
+                Style::new().bold().fg(Color::Red).paint("error:")
+            )
+        } else {
+            err.to_string()
+        };
     };
 
-    let mut lines = vec![format!(
-        "{} [{}]: {}",
-        format!("{:?}", pg.severity()).to_ascii_lowercase(),
-        pg.code(),
-        pg.message()
-    )];
+    format_sql_error_details(&details, sql, color)
+}
 
-    if let Some(detail) = pg.detail() {
-        lines.push(format!("detail: {detail}"));
+fn format_sql_error_details(details: &SqlErrorDetails, sql: Option<&str>, color: bool) -> String {
+    let (severity, sqlstate) = if color {
+        (
+            Style::new()
+                .bold()
+                .fg(Color::Red)
+                .paint(details.severity.as_str())
+                .to_string(),
+            Color::Red.paint(details.sqlstate.as_str()).to_string(),
+        )
+    } else {
+        (details.severity.clone(), details.sqlstate.clone())
+    };
+
+    let mut lines = vec![format!("{severity} [{sqlstate}]: {}", details.message)];
+
+    if let Some(detail) = &details.detail {
+        let label = if color {
+            Style::new().dimmed().paint("detail:").to_string()
+        } else {
+            "detail:".to_owned()
+        };
+        lines.push(format!("{label} {detail}"));
     }
 
     if let Some(sql) = sql
-        && let Some(caret) = error_caret(sql, pg.position())
+        && let Some(position) = details.position
+        && let Some(caret) = format_error_caret(sql, position, color)
     {
         lines.push(caret);
     }
 
-    if let Some(hint) = pg.hint() {
-        lines.push(format!("hint: {hint}"));
+    if let Some(hint) = &details.hint {
+        let label = if color {
+            Color::Yellow.paint("hint:").to_string()
+        } else {
+            "hint:".to_owned()
+        };
+        lines.push(format!("{label} {hint}"));
     }
 
-    if let Some(help) = friendly_hint(pg, catalog) {
-        lines.push(format!("help: {help}"));
+    if let Some(help) = &details.friendly_hint {
+        let label = if color {
+            Color::Cyan.paint("help:").to_string()
+        } else {
+            "help:".to_owned()
+        };
+        lines.push(format!("{label} {help}"));
     }
 
     lines.join("\n")
@@ -159,22 +212,9 @@ fn first_quoted_fragment(message: &str) -> Option<String> {
     Some(message[start..end].to_owned())
 }
 
+#[cfg(test)]
 pub fn error_caret(sql: &str, position: Option<PgErrorPosition<'_>>) -> Option<String> {
-    let position = original_error_position(position)?;
-
-    let target = position.saturating_sub(1);
-    let mut char_index = 0;
-
-    for line in sql.lines() {
-        let line_len = line.chars().count();
-        if target <= char_index + line_len {
-            let column = target.saturating_sub(char_index);
-            return Some(format!("{line}\n{}^", " ".repeat(column)));
-        }
-        char_index += line_len + 1;
-    }
-
-    None
+    format_error_caret(sql, error_position(sql, position)?, false)
 }
 
 pub fn error_position(
@@ -206,9 +246,95 @@ fn original_error_position(position: Option<PgErrorPosition<'_>>) -> Option<usiz
     }
 }
 
+fn format_error_caret(sql: &str, position: SqlErrorPosition, color: bool) -> Option<String> {
+    let line = sql.lines().nth(position.line.checked_sub(1)?)?;
+    let padding = " ".repeat(position.column.checked_sub(1)?);
+    let caret = if color {
+        Color::Red.paint("^").to_string()
+    } else {
+        "^".to_owned()
+    };
+
+    Some(format!("{line}\n{padding}{caret}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_sql_error_details() -> SqlErrorDetails {
+        SqlErrorDetails {
+            severity: "error".to_owned(),
+            sqlstate: "42P01".to_owned(),
+            message: "relation \"customerss\" does not exist".to_owned(),
+            detail: Some("The relation is missing.".to_owned()),
+            hint: Some("Check the table name.".to_owned()),
+            friendly_hint: Some("Did you mean `customers`?".to_owned()),
+            position: Some(SqlErrorPosition {
+                line: 1,
+                column: 15,
+            }),
+        }
+    }
+
+    #[test]
+    fn colored_sql_error_uses_semantic_accents() {
+        // Given
+        let details = test_sql_error_details();
+
+        // When
+        let rendered = format_sql_error_details(&details, Some("select * from customerss"), true);
+
+        // Then
+        assert_eq!(
+            rendered,
+            concat!(
+                "\u{1b}[1;31merror\u{1b}[0m [\u{1b}[31m42P01\u{1b}[0m]: relation \"customerss\" does not exist\n",
+                "\u{1b}[2mdetail:\u{1b}[0m The relation is missing.\n",
+                "select * from customerss\n",
+                "              \u{1b}[31m^\u{1b}[0m\n",
+                "\u{1b}[33mhint:\u{1b}[0m Check the table name.\n",
+                "\u{1b}[36mhelp:\u{1b}[0m Did you mean `customers`?",
+            )
+        );
+    }
+
+    #[test]
+    fn plain_sql_error_preserves_existing_layout() {
+        // Given
+        let details = test_sql_error_details();
+
+        // When
+        let rendered = format_sql_error_details(&details, Some("select * from customerss"), false);
+
+        // Then
+        assert_eq!(
+            rendered,
+            concat!(
+                "error [42P01]: relation \"customerss\" does not exist\n",
+                "detail: The relation is missing.\n",
+                "select * from customerss\n",
+                "              ^\n",
+                "hint: Check the table name.\n",
+                "help: Did you mean `customers`?",
+            )
+        );
+    }
+
+    #[test]
+    fn colored_unstructured_error_adds_red_error_label() {
+        // Given
+        let err = sqlx::Error::Protocol("connection closed".to_owned());
+
+        // When
+        let rendered = format_colored_sql_error(&err, None, None);
+
+        // Then
+        assert_eq!(
+            rendered,
+            "\u{1b}[1;31merror:\u{1b}[0m encountered unexpected or invalid data: connection closed"
+        );
+    }
 
     #[test]
     fn error_caret_points_to_original_sql_position() {
