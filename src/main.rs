@@ -39,8 +39,12 @@ async fn run() -> AppResult<i32> {
     let cli = cli::parse();
     let args = match cli {
         cli::Cli::Run(args) => args,
-        cli::Cli::PrintDefaultKeybindings => {
-            print!("{}", config::DEFAULT_KEYBINDINGS_TOML);
+        cli::Cli::PrintDefaultConfig => {
+            print!("{}", config::default_config());
+            return Ok(0);
+        }
+        cli::Cli::PrintConfigSchema => {
+            print!("{}", config::CONFIG_SCHEMA_KDL);
             return Ok(0);
         }
         cli::Cli::PrintAgentGuide => {

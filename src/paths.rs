@@ -108,7 +108,7 @@ fn home_config_path(path: Option<OsString>) -> Option<PathBuf> {
 }
 
 fn config_path_in_dir(config_dir: PathBuf) -> PathBuf {
-    config_dir.join("dbcrab").join("config.toml")
+    config_dir.join("dbcrab").join("config.kdl")
 }
 
 fn state_home_history_path(
@@ -238,7 +238,7 @@ mod tests {
             Some(
                 PathBuf::from("/xdg-config")
                     .join("dbcrab")
-                    .join("config.toml")
+                    .join("config.kdl")
             )
         );
     }
@@ -262,7 +262,7 @@ mod tests {
             Some(
                 PathBuf::from("C:\\Users\\Alice\\AppData\\Roaming")
                     .join("dbcrab")
-                    .join("config.toml")
+                    .join("config.kdl")
             )
         );
     }
@@ -287,7 +287,7 @@ mod tests {
                     .join("AppData")
                     .join("Roaming")
                     .join("dbcrab")
-                    .join("config.toml")
+                    .join("config.kdl")
             )
         );
     }
@@ -310,7 +310,7 @@ mod tests {
                 PathBuf::from("/home/alice")
                     .join(".config")
                     .join("dbcrab")
-                    .join("config.toml")
+                    .join("config.kdl")
             )
         );
     }

@@ -1,0 +1,324 @@
+/- kdl-version 2
+
+document {
+    info {
+        title "DBCrab configuration"
+        description "Configuration schema for the DBCrab PostgreSQL client."
+        version "1.0.0"
+        link "https://codeberg.org/akhansari/dbcrab" rel=documentation
+    }
+
+    node edit-mode description="Selects the line editor mode." {
+        max 1
+        value {
+            min 1
+            max 1
+            type string
+            enum emacs vi
+        }
+    }
+
+    node keybindings description="Customizes editor, prompt, command, remap, and TUI keys." {
+        max 1
+        children {
+            other-nodes-allowed #false
+
+            node editor description="Shared line editor overrides." {
+                max 1
+                children {
+                    other-nodes-allowed #false
+
+                    node emacs-vi-insert description="Overrides applied to Emacs and Vi insert mode." {
+                        max 1
+                        children ref=#"[id="line-editor-actions"]"#
+                    }
+
+                    node vi-normal description="Overrides applied only to Vi normal mode." {
+                        max 1
+                        children ref=#"[id="line-editor-actions"]"#
+                    }
+                }
+            }
+
+            node prompt description="SQL prompt actions." {
+                max 1
+                children {
+                    other-nodes-allowed #false
+                    node complete ref=#"[id="binding-update"]"#
+                    node cycle-display ref=#"[id="binding-update"]"#
+                    node command-mode ref=#"[id="binding-update"]"#
+                }
+            }
+
+            node vi-remap description="Mode-scoped Vi key remaps. Sources and both sides of swaps must omit Ctrl and Alt; overlapping mode blocks are invalid." {
+                max 2
+                prop modes description="Non-insert Vi modes receiving these remaps." {
+                    required #true
+                    type string
+                    enum normal visual normal,visual
+                }
+                children {
+                    node-names {
+                        pattern #"^(?:shift-)*(?:left|up|right|down|home|end|pageup|page-up|pagedown|page-down|esc|escape|enter|return|tab|backspace|delete|del|space|.)$"#
+                    }
+                    node description="A remap whose node name is the source key and sole value is the target key." {
+                        prop ref=#"[id="remap-operation"]"#
+                        value ref=#"[id="remap-target"]"#
+                    }
+                }
+            }
+
+            node shortcut-nav-remap description="Global Ctrl/Alt shortcut remaps. Every source and both sides of swaps must contain Ctrl or Alt, optionally with Shift." {
+                max 1
+                children {
+                    node-names {
+                        pattern #"^(?=.*(?:ctrl|control|alt)-)(?:(?:ctrl|control|alt|shift)-)*(?:left|up|right|down|home|end|pageup|page-up|pagedown|page-down|esc|escape|enter|return|tab|backspace|delete|del|space|.)$"#
+                    }
+                    node description="A remap whose node name is the source key and sole value is the target key." {
+                        prop ref=#"[id="remap-operation"]"#
+                        value ref=#"[id="remap-target"]"#
+                    }
+                }
+            }
+
+            node command description="Command editor actions and line editor overrides." {
+                max 1
+                children ref=#"[id="command-actions"]"#
+            }
+
+            node tui description="Full-screen result viewer actions." {
+                max 1
+                children {
+                    other-nodes-allowed #false
+                    node left ref=#"[id="binding-update"]"#
+                    node up ref=#"[id="binding-update"]"#
+                    node right ref=#"[id="binding-update"]"#
+                    node down ref=#"[id="binding-update"]"#
+                    node half-page-left ref=#"[id="binding-update"]"#
+                    node half-page-up ref=#"[id="binding-update"]"#
+                    node half-page-right ref=#"[id="binding-update"]"#
+                    node half-page-down ref=#"[id="binding-update"]"#
+                    node full-page-left ref=#"[id="binding-update"]"#
+                    node full-page-up ref=#"[id="binding-update"]"#
+                    node full-page-right ref=#"[id="binding-update"]"#
+                    node full-page-down ref=#"[id="binding-update"]"#
+                    node toggle-preview ref=#"[id="binding-update"]"#
+                    node focus-next ref=#"[id="binding-update"]"#
+                    node edit-cell ref=#"[id="binding-update"]"#
+                    node stage-change ref=#"[id="binding-update"]"#
+                    node stage-null ref=#"[id="binding-update"]"#
+                    node update-row ref=#"[id="binding-update"]"#
+                    node yank-cell ref=#"[id="binding-update"]"#
+                    node quit ref=#"[id="binding-update"]"#
+                }
+            }
+        }
+    }
+
+    other-nodes-allowed #false
+
+    definitions {
+        prop do id=binding-operation description="Update operation. Omission means set." {
+            type string
+            enum set add remove
+        }
+
+        prop do id=remap-operation description="Remap operation. Omission means one-way set." {
+            type string
+            enum set swap
+        }
+
+        value id=binding-keys description="Zero or more key names." {
+            type string
+            pattern #"^(?:(?:ctrl|control|alt|shift)-)*(?:left|up|right|down|home|end|pageup|page-up|pagedown|page-down|esc|escape|enter|return|tab|backspace|delete|del|space|.)$"#
+        }
+
+        value id=remap-target description="Exactly one target key name." {
+            min 1
+            max 1
+            type string
+            pattern #"^(?:(?:ctrl|control|alt|shift)-)*(?:left|up|right|down|home|end|pageup|page-up|pagedown|page-down|esc|escape|enter|return|tab|backspace|delete|del|space|.)$"#
+        }
+
+        node id=binding-update description="An ordered keybinding update." {
+            prop ref=#"[id="binding-operation"]"#
+            value ref=#"[id="binding-keys"]"#
+        }
+
+        children id=line-editor-actions {
+            other-nodes-allowed #false
+            node esc ref=#"[id="binding-update"]"#
+            node ctrl-c ref=#"[id="binding-update"]"#
+            node ctrl-d ref=#"[id="binding-update"]"#
+            node clear-screen ref=#"[id="binding-update"]"#
+            node history-menu ref=#"[id="binding-update"]"#
+            node open-editor ref=#"[id="binding-update"]"#
+            node enter ref=#"[id="binding-update"]"#
+            node insert-newline ref=#"[id="binding-update"]"#
+            node up ref=#"[id="binding-update"]"#
+            node down ref=#"[id="binding-update"]"#
+            node left ref=#"[id="binding-update"]"#
+            node right ref=#"[id="binding-update"]"#
+            node to-start ref=#"[id="binding-update"]"#
+            node to-end ref=#"[id="binding-update"]"#
+            node move-to-start ref=#"[id="binding-update"]"#
+            node move-to-line-start ref=#"[id="binding-update"]"#
+            node move-to-line-non-blank-start ref=#"[id="binding-update"]"#
+            node move-to-end ref=#"[id="binding-update"]"#
+            node move-to-line-end ref=#"[id="binding-update"]"#
+            node move-line-up ref=#"[id="binding-update"]"#
+            node move-line-down ref=#"[id="binding-update"]"#
+            node move-left ref=#"[id="binding-update"]"#
+            node move-right ref=#"[id="binding-update"]"#
+            node move-word-left ref=#"[id="binding-update"]"#
+            node move-word-right ref=#"[id="binding-update"]"#
+            node move-big-word-left ref=#"[id="binding-update"]"#
+            node move-big-word-right ref=#"[id="binding-update"]"#
+            node move-word-right-start ref=#"[id="binding-update"]"#
+            node move-word-right-end ref=#"[id="binding-update"]"#
+            node move-big-word-right-start ref=#"[id="binding-update"]"#
+            node move-big-word-right-end ref=#"[id="binding-update"]"#
+            node backspace ref=#"[id="binding-update"]"#
+            node delete ref=#"[id="binding-update"]"#
+            node backspace-word ref=#"[id="binding-update"]"#
+            node delete-word ref=#"[id="binding-update"]"#
+            node cut-char ref=#"[id="binding-update"]"#
+            node clear ref=#"[id="binding-update"]"#
+            node clear-to-line-end ref=#"[id="binding-update"]"#
+            node cut-current-line ref=#"[id="binding-update"]"#
+            node cut-from-start ref=#"[id="binding-update"]"#
+            node cut-from-line-start ref=#"[id="binding-update"]"#
+            node cut-from-line-non-blank-start ref=#"[id="binding-update"]"#
+            node cut-to-end ref=#"[id="binding-update"]"#
+            node cut-to-line-end ref=#"[id="binding-update"]"#
+            node kill-line ref=#"[id="binding-update"]"#
+            node cut-word-left ref=#"[id="binding-update"]"#
+            node cut-word-right ref=#"[id="binding-update"]"#
+            node cut-big-word-left ref=#"[id="binding-update"]"#
+            node cut-big-word-right ref=#"[id="binding-update"]"#
+            node paste-cut-buffer-before ref=#"[id="binding-update"]"#
+            node paste-cut-buffer-after ref=#"[id="binding-update"]"#
+            node paste ref=#"[id="binding-update"]"#
+            node undo ref=#"[id="binding-update"]"#
+            node redo ref=#"[id="binding-update"]"#
+            node uppercase-word ref=#"[id="binding-update"]"#
+            node lowercase-word ref=#"[id="binding-update"]"#
+            node capitalize-char ref=#"[id="binding-update"]"#
+            node switchcase-char ref=#"[id="binding-update"]"#
+            node swap-words ref=#"[id="binding-update"]"#
+            node swap-graphemes ref=#"[id="binding-update"]"#
+            node select-all ref=#"[id="binding-update"]"#
+            node copy-selection ref=#"[id="binding-update"]"#
+            node cut-selection ref=#"[id="binding-update"]"#
+            node copy-from-start ref=#"[id="binding-update"]"#
+            node copy-from-line-start ref=#"[id="binding-update"]"#
+            node copy-from-line-non-blank-start ref=#"[id="binding-update"]"#
+            node copy-to-end ref=#"[id="binding-update"]"#
+            node copy-to-line-end ref=#"[id="binding-update"]"#
+            node copy-current-line ref=#"[id="binding-update"]"#
+            node copy-word-left ref=#"[id="binding-update"]"#
+            node copy-word-right ref=#"[id="binding-update"]"#
+            node copy-big-word-left ref=#"[id="binding-update"]"#
+            node copy-big-word-right ref=#"[id="binding-update"]"#
+            node move-line-up-select ref=#"[id="binding-update"]"#
+            node move-line-down-select ref=#"[id="binding-update"]"#
+            node move-left-select ref=#"[id="binding-update"]"#
+            node move-right-select ref=#"[id="binding-update"]"#
+            node move-word-left-select ref=#"[id="binding-update"]"#
+            node move-word-right-select ref=#"[id="binding-update"]"#
+            node move-to-line-start-select ref=#"[id="binding-update"]"#
+            node move-to-line-end-select ref=#"[id="binding-update"]"#
+            node move-to-start-select ref=#"[id="binding-update"]"#
+            node move-to-end-select ref=#"[id="binding-update"]"#
+        }
+
+        children id=command-actions {
+            other-nodes-allowed #false
+            node complete ref=#"[id="binding-update"]"#
+            node cancel ref=#"[id="binding-update"]"#
+            node esc ref=#"[id="binding-update"]"#
+            node ctrl-c ref=#"[id="binding-update"]"#
+            node ctrl-d ref=#"[id="binding-update"]"#
+            node clear-screen ref=#"[id="binding-update"]"#
+            node history-menu ref=#"[id="binding-update"]"#
+            node open-editor ref=#"[id="binding-update"]"#
+            node enter ref=#"[id="binding-update"]"#
+            node insert-newline ref=#"[id="binding-update"]"#
+            node up ref=#"[id="binding-update"]"#
+            node down ref=#"[id="binding-update"]"#
+            node left ref=#"[id="binding-update"]"#
+            node right ref=#"[id="binding-update"]"#
+            node to-start ref=#"[id="binding-update"]"#
+            node to-end ref=#"[id="binding-update"]"#
+            node move-to-start ref=#"[id="binding-update"]"#
+            node move-to-line-start ref=#"[id="binding-update"]"#
+            node move-to-line-non-blank-start ref=#"[id="binding-update"]"#
+            node move-to-end ref=#"[id="binding-update"]"#
+            node move-to-line-end ref=#"[id="binding-update"]"#
+            node move-line-up ref=#"[id="binding-update"]"#
+            node move-line-down ref=#"[id="binding-update"]"#
+            node move-left ref=#"[id="binding-update"]"#
+            node move-right ref=#"[id="binding-update"]"#
+            node move-word-left ref=#"[id="binding-update"]"#
+            node move-word-right ref=#"[id="binding-update"]"#
+            node move-big-word-left ref=#"[id="binding-update"]"#
+            node move-big-word-right ref=#"[id="binding-update"]"#
+            node move-word-right-start ref=#"[id="binding-update"]"#
+            node move-word-right-end ref=#"[id="binding-update"]"#
+            node move-big-word-right-start ref=#"[id="binding-update"]"#
+            node move-big-word-right-end ref=#"[id="binding-update"]"#
+            node backspace ref=#"[id="binding-update"]"#
+            node delete ref=#"[id="binding-update"]"#
+            node backspace-word ref=#"[id="binding-update"]"#
+            node delete-word ref=#"[id="binding-update"]"#
+            node cut-char ref=#"[id="binding-update"]"#
+            node clear ref=#"[id="binding-update"]"#
+            node clear-to-line-end ref=#"[id="binding-update"]"#
+            node cut-current-line ref=#"[id="binding-update"]"#
+            node cut-from-start ref=#"[id="binding-update"]"#
+            node cut-from-line-start ref=#"[id="binding-update"]"#
+            node cut-from-line-non-blank-start ref=#"[id="binding-update"]"#
+            node cut-to-end ref=#"[id="binding-update"]"#
+            node cut-to-line-end ref=#"[id="binding-update"]"#
+            node kill-line ref=#"[id="binding-update"]"#
+            node cut-word-left ref=#"[id="binding-update"]"#
+            node cut-word-right ref=#"[id="binding-update"]"#
+            node cut-big-word-left ref=#"[id="binding-update"]"#
+            node cut-big-word-right ref=#"[id="binding-update"]"#
+            node paste-cut-buffer-before ref=#"[id="binding-update"]"#
+            node paste-cut-buffer-after ref=#"[id="binding-update"]"#
+            node paste ref=#"[id="binding-update"]"#
+            node undo ref=#"[id="binding-update"]"#
+            node redo ref=#"[id="binding-update"]"#
+            node uppercase-word ref=#"[id="binding-update"]"#
+            node lowercase-word ref=#"[id="binding-update"]"#
+            node capitalize-char ref=#"[id="binding-update"]"#
+            node switchcase-char ref=#"[id="binding-update"]"#
+            node swap-words ref=#"[id="binding-update"]"#
+            node swap-graphemes ref=#"[id="binding-update"]"#
+            node select-all ref=#"[id="binding-update"]"#
+            node copy-selection ref=#"[id="binding-update"]"#
+            node cut-selection ref=#"[id="binding-update"]"#
+            node copy-from-start ref=#"[id="binding-update"]"#
+            node copy-from-line-start ref=#"[id="binding-update"]"#
+            node copy-from-line-non-blank-start ref=#"[id="binding-update"]"#
+            node copy-to-end ref=#"[id="binding-update"]"#
+            node copy-to-line-end ref=#"[id="binding-update"]"#
+            node copy-current-line ref=#"[id="binding-update"]"#
+            node copy-word-left ref=#"[id="binding-update"]"#
+            node copy-word-right ref=#"[id="binding-update"]"#
+            node copy-big-word-left ref=#"[id="binding-update"]"#
+            node copy-big-word-right ref=#"[id="binding-update"]"#
+            node move-line-up-select ref=#"[id="binding-update"]"#
+            node move-line-down-select ref=#"[id="binding-update"]"#
+            node move-left-select ref=#"[id="binding-update"]"#
+            node move-right-select ref=#"[id="binding-update"]"#
+            node move-word-left-select ref=#"[id="binding-update"]"#
+            node move-word-right-select ref=#"[id="binding-update"]"#
+            node move-to-line-start-select ref=#"[id="binding-update"]"#
+            node move-to-line-end-select ref=#"[id="binding-update"]"#
+            node move-to-start-select ref=#"[id="binding-update"]"#
+            node move-to-end-select ref=#"[id="binding-update"]"#
+        }
+    }
+}

@@ -127,11 +127,7 @@ async fn run_result_grid(
             continue;
         }
 
-        let key = if state.is_editing() {
-            key_remaps.remap_text_input_key_event(key)
-        } else {
-            key_remaps.remap_key_event(key)
-        };
+        let key = key_remaps.remap_shortcut_key_event(key);
 
         match state.handle_key(key, grid, keybindings) {
             TuiRequest::Continue => {}

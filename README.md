@@ -69,7 +69,7 @@ Use `Tab` or `Ctrl-Space` to open completion suggestions.
 Press `:` on an empty SQL prompt to enter command mode. Commands do not need a
 semicolon.
 
-Press `Esc` or `Ctrl-D` to return to the SQL prompt. With `edit_mode = "vi"`,
+Press `Esc` or `Ctrl-D` to return to the SQL prompt. With `edit-mode vi`,
 command mode uses Vi editing too, so `Esc` first leaves insert mode and a second
 `Esc` returns to the SQL prompt.
 
@@ -166,36 +166,75 @@ dbcrab postgres://user@localhost/app -c my_app
 
 ### Configuration
 
-DBCrab reads `dbcrab/config.toml` from your user configuration directory: XDG
-config paths when configured, `$HOME/.config/dbcrab/config.toml` on Unix-like
-systems, or `%APPDATA%\dbcrab\config.toml` on Windows. Use `--config PATH` to
-load a specific file.
+DBCrab reads `dbcrab/config.kdl` from your user configuration directory: XDG
+config paths when configured, `$HOME/.config/dbcrab/config.kdl` on Unix-like
+systems, or `%APPDATA%\dbcrab\config.kdl` on Windows. Use `--config PATH` to
+load a specific KDL file. TOML configuration files are not supported.
 
 Start with only the settings you want to change:
 
-```toml
-edit_mode = "emacs" # or "vi"
+```kdl
+/- kdl-version 2
 
-[keybindings.prompt]
-complete.add = ["ctrl-y"]      # keep defaults and add ctrl-y
-complete.remove = ["ctrl-space"]
-cycle_display.set = ["ctrl-v"] # replace all bindings for this action
-command_mode = ["ctrl-g"]      # plain assignment is also replacement
+edit-mode emacs // or vi
 
-[keybindings.remap]
-j.swap = "n" # swap j and n in navigation contexts
+keybindings {
+    editor {
+        // Applied to both Emacs and Vi insert mode.
+        emacs-vi-insert {
+            clear-screen ctrl-l
+        }
 
-[keybindings.tui]
-quit.add = ["ctrl-q"]
+        vi-normal {
+            undo u
+        }
+    }
+
+    prompt {
+        complete do=add ctrl-y
+        complete do=remove ctrl-space
+        cycle-display ctrl-v
+        command-mode ctrl-g
+    }
+
+    vi-remap modes=normal,visual {
+        j do=swap n
+    }
+
+    shortcut-nav-remap {
+        ctrl-j do=swap ctrl-n
+    }
+
+    command {
+        clear-screen ctrl-l
+    }
+
+    tui {
+        quit do=add ctrl-q
+    }
+}
 ```
 
-Print the full default keybinding template with:
+Print the full default configuration with:
 
 ```sh
-dbcrab --default-keybindings
+dbcrab --default-config
 ```
 
-Keybindings are merged with DBCrab defaults. A plain assignment is the same as
-`.set`: it replaces an action's bindings. Use `.add` to append keys, `.remove`
-to drop keys, and `.swap` under `[keybindings.remap]` to create a two-way key
-remap. The swap is useful for those that have a different layout than QWERTY.
+Keybindings are merged with DBCrab defaults. Omitting `do` means `do=set`, which
+replaces an action's bindings. Use `do=add` to append keys and `do=remove` to
+drop keys. Repeated action nodes are applied in document order.
+
+`vi-remap` applies keys without Ctrl or Alt, optionally with Shift, only in the
+selected non-insert Vi modes. Its required `modes` property accepts `normal`,
+`visual`, or `normal,visual`.
+`shortcut-nav-remap` applies globally and requires Ctrl or Alt on every source
+key, optionally with Shift. Use `do=swap` in either group for a two-way remap;
+both sides must satisfy that group's source modifier rule.
+
+The configuration schema is available at [`config.schema.kdl`](config.schema.kdl)
+or from the installed binary:
+
+```sh
+dbcrab --config-schema
+```

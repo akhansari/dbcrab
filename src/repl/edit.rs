@@ -5,14 +5,14 @@ use std::sync::{
 
 use crossterm::event::{Event, KeyCode, KeyModifiers};
 use reedline::{
-    EditCommand, EditMode, Emacs, PromptEditMode, PromptViMode, ReedlineEvent, ReedlineRawEvent,
-    Vi, default_emacs_keybindings, default_vi_insert_keybindings, default_vi_normal_keybindings,
+    EditCommand, EditMode, Emacs, PromptEditMode, PromptViMode, ReedlineEvent, ReedlineRawEvent, Vi,
 };
 
 use crate::{
     config::{
-        CommandKeybindings, ConfigEditMode, KeyBinding, KeyRemaps, KeybindingsConfig,
-        history_menu_event,
+        CommandKeybindings, ConfigEditMode, KeyBinding, KeyRemaps, KeybindingsConfig, ViRemapMode,
+        default_emacs_editor_keybindings, default_vi_insert_editor_keybindings,
+        default_vi_normal_editor_keybindings,
     },
     render::DisplayModeState,
 };
@@ -78,15 +78,15 @@ impl SqlEditMode {
     }
 
     fn remap_event_for_current_mode(&self, event: Event) -> Event {
-        match self.inner.edit_mode() {
-            PromptEditMode::Emacs | PromptEditMode::Vi(PromptViMode::Insert) => {
-                self.key_remaps.remap_text_input_event(event)
-            }
+        let vi_mode = match self.inner.edit_mode() {
+            PromptEditMode::Vi(PromptViMode::Normal) => Some(ViRemapMode::Normal),
+            PromptEditMode::Vi(PromptViMode::Visual) => Some(ViRemapMode::Visual),
             PromptEditMode::Default
-            | PromptEditMode::Vi(PromptViMode::Normal)
-            | PromptEditMode::Vi(PromptViMode::Visual)
-            | PromptEditMode::Custom(_) => self.key_remaps.remap_event(event),
-        }
+            | PromptEditMode::Emacs
+            | PromptEditMode::Vi(PromptViMode::Insert)
+            | PromptEditMode::Custom(_) => None,
+        };
+        self.key_remaps.remap_editor_event(vi_mode, event)
     }
 }
 
@@ -239,7 +239,17 @@ impl CommandEditMode {
 
 impl EditMode for CommandEditMode {
     fn parse_event(&mut self, event: ReedlineRawEvent) -> ReedlineEvent {
-        let event = self.key_remaps.remap_text_input_event(Event::from(event));
+        let vi_mode = match self.inner.edit_mode() {
+            PromptEditMode::Vi(PromptViMode::Normal) => Some(ViRemapMode::Normal),
+            PromptEditMode::Vi(PromptViMode::Visual) => Some(ViRemapMode::Visual),
+            PromptEditMode::Default
+            | PromptEditMode::Emacs
+            | PromptEditMode::Vi(PromptViMode::Insert)
+            | PromptEditMode::Custom(_) => None,
+        };
+        let event = self
+            .key_remaps
+            .remap_editor_event(vi_mode, Event::from(event));
 
         if self.should_cancel(&event) {
             return ReedlineEvent::ExecuteHostCommand(COMMAND_CANCEL_HOST_COMMAND.to_owned());
@@ -269,10 +279,8 @@ pub(super) fn sql_inner_edit_mode(
 }
 
 fn sql_emacs_keybindings(config: &KeybindingsConfig) -> reedline::Keybindings {
-    let mut keybindings = default_emacs_keybindings();
-    add_history_menu_keybinding(&mut keybindings);
-    config.prompt.insert.apply_to(&mut keybindings);
-    config.prompt.emacs.apply_to(&mut keybindings);
+    let mut keybindings = default_emacs_editor_keybindings();
+    config.editor.emacs_vi_insert.apply_to(&mut keybindings);
     add_completion_keybindings(&mut keybindings, &config.prompt.complete, COMPLETION_MENU);
 
     keybindings
@@ -288,19 +296,16 @@ fn sql_vi_keybindings(
 }
 
 fn sql_vi_insert_keybindings(config: &KeybindingsConfig) -> reedline::Keybindings {
-    let mut insert = default_vi_insert_keybindings();
-    add_history_menu_keybinding(&mut insert);
-    config.prompt.insert.apply_to(&mut insert);
-    config.prompt.vi_insert.apply_to(&mut insert);
+    let mut insert = default_vi_insert_editor_keybindings();
+    config.editor.emacs_vi_insert.apply_to(&mut insert);
     add_completion_keybindings(&mut insert, &config.prompt.complete, COMPLETION_MENU);
 
     insert
 }
 
 fn sql_vi_normal_keybindings(config: &KeybindingsConfig) -> reedline::Keybindings {
-    let mut normal = default_vi_normal_keybindings();
-    add_history_menu_keybinding(&mut normal);
-    config.prompt.vi_normal.apply_to(&mut normal);
+    let mut normal = default_vi_normal_editor_keybindings();
+    config.editor.vi_normal.apply_to(&mut normal);
 
     normal
 }
@@ -321,10 +326,11 @@ pub(super) fn command_inner_edit_mode(
 }
 
 fn command_emacs_keybindings(keybindings: &KeybindingsConfig) -> reedline::Keybindings {
-    let mut editor_keybindings = default_emacs_keybindings();
-    add_history_menu_keybinding(&mut editor_keybindings);
-    keybindings.prompt.insert.apply_to(&mut editor_keybindings);
-    keybindings.prompt.emacs.apply_to(&mut editor_keybindings);
+    let mut editor_keybindings = default_emacs_editor_keybindings();
+    keybindings
+        .editor
+        .emacs_vi_insert
+        .apply_to(&mut editor_keybindings);
     keybindings.command.editor.apply_to(&mut editor_keybindings);
     add_completion_keybindings(
         &mut editor_keybindings,
@@ -340,18 +346,15 @@ fn command_vi_keybindings(
 ) -> (reedline::Keybindings, reedline::Keybindings) {
     let insert = command_vi_insert_keybindings(keybindings);
 
-    let mut normal = default_vi_normal_keybindings();
-    add_history_menu_keybinding(&mut normal);
-    keybindings.prompt.vi_normal.apply_to(&mut normal);
+    let mut normal = default_vi_normal_editor_keybindings();
+    keybindings.editor.vi_normal.apply_to(&mut normal);
 
     (insert, normal)
 }
 
 fn command_vi_insert_keybindings(keybindings: &KeybindingsConfig) -> reedline::Keybindings {
-    let mut insert = default_vi_insert_keybindings();
-    add_history_menu_keybinding(&mut insert);
-    keybindings.prompt.insert.apply_to(&mut insert);
-    keybindings.prompt.vi_insert.apply_to(&mut insert);
+    let mut insert = default_vi_insert_editor_keybindings();
+    keybindings.editor.emacs_vi_insert.apply_to(&mut insert);
     keybindings.command.editor.apply_to(&mut insert);
     add_completion_keybindings(
         &mut insert,
@@ -360,15 +363,6 @@ fn command_vi_insert_keybindings(keybindings: &KeybindingsConfig) -> reedline::K
     );
 
     insert
-}
-
-fn add_history_menu_keybinding(keybindings: &mut reedline::Keybindings) {
-    keybindings.remove_binding(KeyModifiers::CONTROL, KeyCode::Char('r'));
-    keybindings.add_binding(
-        KeyModifiers::CONTROL,
-        KeyCode::Char('r'),
-        history_menu_event(),
-    );
 }
 
 fn add_completion_keybindings(
@@ -400,6 +394,7 @@ fn is_unmodified_escape(event: &Event) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::history_menu_event;
     use crate::render::{DisplayMode, DisplayModeState};
     use crossterm::event::KeyEvent;
 
@@ -449,11 +444,13 @@ mod tests {
 
     fn swapped_plain_key_remaps(from: char, to: char) -> KeyRemaps {
         let mut key_remaps = KeyRemaps::default();
-        key_remaps.set(
+        key_remaps.set_vi_remap(
+            ViRemapMode::Normal,
             key_binding(KeyCode::Char(from), KeyModifiers::NONE),
             key_binding(KeyCode::Char(to), KeyModifiers::NONE),
         );
-        key_remaps.set(
+        key_remaps.set_vi_remap(
+            ViRemapMode::Normal,
             key_binding(KeyCode::Char(to), KeyModifiers::NONE),
             key_binding(KeyCode::Char(from), KeyModifiers::NONE),
         );
@@ -467,7 +464,7 @@ mod tests {
         to_modifiers: KeyModifiers,
     ) -> KeyRemaps {
         let mut key_remaps = KeyRemaps::default();
-        key_remaps.set(
+        key_remaps.set_shortcut_nav_remap(
             key_binding(from_code, from_modifiers),
             key_binding(to_code, to_modifiers),
         );

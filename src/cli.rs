@@ -6,7 +6,8 @@ use crate::agent::{AgentFormat, AgentOptions, DEFAULT_MAX_ROWS, DEFAULT_STATEMEN
 
 pub enum Cli {
     Run(Args),
-    PrintDefaultKeybindings,
+    PrintDefaultConfig,
+    PrintConfigSchema,
     PrintAgentGuide,
 }
 
@@ -42,17 +43,24 @@ where
         .version(env!("CARGO_PKG_VERSION"))
         .about("Modern REPL-first PostgreSQL client.")
         .arg(
-            Arg::new("default-keybindings")
-                .long("default-keybindings")
-                .help("Print the default keybinding configuration and exit")
-                .conflicts_with_all(["agent-guide", "execute", "command"])
+            Arg::new("default-config")
+                .long("default-config")
+                .help("Print the default KDL configuration and exit")
+                .conflicts_with_all(["config-schema", "agent-guide", "execute", "command"])
+                .action(ArgAction::SetTrue),
+        )
+        .arg(
+            Arg::new("config-schema")
+                .long("config-schema")
+                .help("Print the KDL configuration schema and exit")
+                .conflicts_with_all(["default-config", "agent-guide", "execute", "command"])
                 .action(ArgAction::SetTrue),
         )
         .arg(
             Arg::new("agent-guide")
                 .long("agent-guide")
                 .help("Print a compact prompt for coding agents and exit")
-                .conflicts_with_all(["default-keybindings", "execute", "command"])
+                .conflicts_with_all(["default-config", "config-schema", "execute", "command"])
                 .action(ArgAction::SetTrue),
         )
         .arg(
@@ -116,13 +124,16 @@ where
         .arg(
             Arg::new("connection")
                 .help("PostgreSQL connection string, for example postgres://user@localhost/db")
-                .required_unless_present_any(["default-keybindings", "agent-guide"])
+                .required_unless_present_any(["default-config", "config-schema", "agent-guide"])
                 .index(1),
         )
         .get_matches_from(args);
 
-    if matches.get_flag("default-keybindings") {
-        return Cli::PrintDefaultKeybindings;
+    if matches.get_flag("default-config") {
+        return Cli::PrintDefaultConfig;
+    }
+    if matches.get_flag("config-schema") {
+        return Cli::PrintConfigSchema;
     }
     let format = matches
         .get_one::<String>("format")
@@ -193,8 +204,9 @@ mod tests {
         // Then
         match cli {
             Cli::Run(args) => assert_eq!(args.history_context, Some("app".to_owned())),
-            Cli::PrintDefaultKeybindings => panic!("expected run args"),
-            Cli::PrintAgentGuide => panic!("expected run args"),
+            Cli::PrintDefaultConfig | Cli::PrintConfigSchema | Cli::PrintAgentGuide => {
+                panic!("expected run args")
+            }
         }
     }
 
@@ -226,7 +238,7 @@ mod tests {
                 }
                 RunMode::Interactive | RunMode::Command { .. } => panic!("expected execute mode"),
             },
-            Cli::PrintDefaultKeybindings | Cli::PrintAgentGuide => {
+            Cli::PrintDefaultConfig | Cli::PrintConfigSchema | Cli::PrintAgentGuide => {
                 panic!("expected run args")
             }
         }
@@ -249,7 +261,7 @@ mod tests {
                 }
                 RunMode::Interactive | RunMode::Command { .. } => panic!("expected execute mode"),
             },
-            Cli::PrintDefaultKeybindings | Cli::PrintAgentGuide => {
+            Cli::PrintDefaultConfig | Cli::PrintConfigSchema | Cli::PrintAgentGuide => {
                 panic!("expected run args")
             }
         }
@@ -277,7 +289,7 @@ mod tests {
                 }
                 RunMode::Interactive | RunMode::Execute { .. } => panic!("expected command mode"),
             },
-            Cli::PrintDefaultKeybindings | Cli::PrintAgentGuide => {
+            Cli::PrintDefaultConfig | Cli::PrintConfigSchema | Cli::PrintAgentGuide => {
                 panic!("expected run args")
             }
         }
@@ -300,7 +312,7 @@ mod tests {
                 }
                 RunMode::Interactive | RunMode::Execute { .. } => panic!("expected command mode"),
             },
-            Cli::PrintDefaultKeybindings | Cli::PrintAgentGuide => {
+            Cli::PrintDefaultConfig | Cli::PrintConfigSchema | Cli::PrintAgentGuide => {
                 panic!("expected run args")
             }
         }
@@ -317,7 +329,43 @@ mod tests {
         // Then
         match cli {
             Cli::PrintAgentGuide => {}
-            Cli::Run(_) | Cli::PrintDefaultKeybindings => panic!("expected agent guide output"),
+            Cli::Run(_) | Cli::PrintDefaultConfig | Cli::PrintConfigSchema => {
+                panic!("expected agent guide output")
+            }
+        }
+    }
+
+    #[test]
+    fn default_config_option_does_not_require_connection() {
+        // Given
+        let args = ["dbcrab", "--default-config"];
+
+        // When
+        let cli = parse_from(args);
+
+        // Then
+        match cli {
+            Cli::PrintDefaultConfig => {}
+            Cli::Run(_) | Cli::PrintConfigSchema | Cli::PrintAgentGuide => {
+                panic!("expected default config output")
+            }
+        }
+    }
+
+    #[test]
+    fn config_schema_option_does_not_require_connection() {
+        // Given
+        let args = ["dbcrab", "--config-schema"];
+
+        // When
+        let cli = parse_from(args);
+
+        // Then
+        match cli {
+            Cli::PrintConfigSchema => {}
+            Cli::Run(_) | Cli::PrintDefaultConfig | Cli::PrintAgentGuide => {
+                panic!("expected config schema output")
+            }
         }
     }
 }
