@@ -1,5 +1,6 @@
 stages:
   - check
+  - build
   - release
 
 variables:
@@ -23,11 +24,49 @@ checks:
       - main
       - /^v.*$/
 
+build-release:
+  stage: build
+  image: ghcr.io/rust-cross/cargo-zigbuild:0.23.0
+  before_script:
+    - rustup toolchain install stable --profile minimal --target "$TARGET"
+    - |
+      if [ "$TARGET" = x86_64-pc-windows-gnu ]; then
+        apt-get update
+        apt-get install -y --no-install-recommends binutils-mingw-w64-x86-64
+      fi
+  script:
+    - cargo +stable zigbuild --locked --release --target "$TARGET"
+    - |
+      case "$TARGET" in
+        *-windows-*) binary=dbcrab.exe ;;
+        *) binary=dbcrab ;;
+      esac
+      mkdir -p dist
+      archive="dbcrab-$CI_COMMIT_TAG-$TARGET.tar.gz"
+      tar -C "target/$TARGET/release" -czf "dist/$archive" "$binary"
+      (cd dist && sha256sum "$archive" > "$archive.sha256")
+  artifacts:
+    name: "dbcrab-$CI_COMMIT_TAG-$TARGET"
+    paths:
+      - dist/
+    expire_in: 1 week
+  parallel:
+    matrix:
+      - TARGET:
+          - x86_64-unknown-linux-gnu
+          - x86_64-unknown-linux-musl
+          - aarch64-unknown-linux-musl
+          - x86_64-pc-windows-gnu
+  only:
+    refs:
+      - /^v.*$/
+
 publish:
   stage: release
   image: rust:1
   script:
-    - cargo publish --locked --no-verify
+    - echo "temp disabled"
+    # - cargo publish --locked --no-verify --allow-dirty
   only:
     refs:
       - /^v.*$/
@@ -40,12 +79,14 @@ release:
     GIT_DEPTH: 0
   needs:
     - job: publish
+    - job: build-release
+      artifacts: true
   before_script:
     - apk update
-    - apk install git-cliff glab
+    - apk add git-cliff glab
   script:
     - git-cliff --latest --output=release-notes.md
-    - glab release create "$CI_COMMIT_TAG" --name "$CI_COMMIT_TAG" --notes-file release-notes.md --ref "$CI_COMMIT_SHA"
+    - glab release create "$CI_COMMIT_TAG" dist/* --name "$CI_COMMIT_TAG" --notes-file release-notes.md --ref "$CI_COMMIT_SHA" --use-package-registry
   only:
     refs:
       - /^v.*$/
