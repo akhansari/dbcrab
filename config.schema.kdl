@@ -5,7 +5,7 @@ document {
         title "DBCrab configuration"
         description "Configuration schema for the DBCrab PostgreSQL client."
         version "1.0.0"
-        link "https://codeberg.org/akhansari/dbcrab" rel=documentation
+        link "https://gitlab.com/akhansari/dbcrab" rel=documentation
     }
 
     node edit-mode description="Selects the line editor mode." {
