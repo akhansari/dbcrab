@@ -25,12 +25,15 @@ use sqlx::PgPool;
 use crate::{
     catalog::SharedCatalog,
     completion::SqlCompleter,
-    config::{ConfigEditMode, HISTORY_MENU, KeyRemaps, KeybindingsConfig, TuiKeybindings},
-    errors::AppResult,
+    config::{
+        ConfigEditMode, ConfigSource, HISTORY_MENU, KeyRemaps, KeybindingsConfig, TuiKeybindings,
+    },
+    errors::{AppError, AppResult},
     highlight::SqlHighlighter,
     meta::{self, CommandCompleter, CommandHighlighter, CommandOutcome, CommandValidator},
+    named_sql::{NamedSqlContext, NamedStatementResult, PreparedNamedSql, execute_prepared},
     prompt::{CommandPrompt, DbPrompt},
-    render::{DisplayMode, DisplayModeState},
+    render::{DisplayMode, DisplayModeState, render_grid},
     sql::split_complete_statements,
     validator::SqlValidator,
 };
@@ -39,7 +42,7 @@ use self::{
     edit::{CommandEditMode, SqlEditMode, command_inner_edit_mode, sql_inner_edit_mode},
     history::{HISTORY_LIMIT, persistent_history},
     output::render_meta_output,
-    statement::execute_statement,
+    statement::{execute_statement, format_statement_error, render_statement_status},
 };
 
 const COMPLETION_MENU: &str = "completion_menu";
@@ -48,12 +51,19 @@ const COMMAND_MODE_HOST_COMMAND: &str = "dbcrab:command-mode";
 const COMMAND_CANCEL_HOST_COMMAND: &str = "dbcrab:cancel-command-mode";
 const HISTORY_EXCLUSION_PREFIX: &str = " ";
 
+#[derive(Clone, Copy)]
+struct CommandContext<'a> {
+    named_sql: &'a NamedSqlContext,
+    config_source: &'a ConfigSource,
+}
+
 pub async fn run(
     pool: PgPool,
     catalog: SharedCatalog,
     edit_mode: ConfigEditMode,
     keybindings: KeybindingsConfig,
-    history_context: Option<String>,
+    config_source: ConfigSource,
+    named_sql: NamedSqlContext,
 ) -> AppResult<()> {
     let display_mode = DisplayModeState::new();
     let command_mode_ready = Arc::new(AtomicBool::new(true));
@@ -63,10 +73,11 @@ pub async fn run(
         &keybindings,
         display_mode.clone(),
         command_mode_ready.clone(),
-        history_context.as_deref(),
+        named_sql.history_context(),
     );
     let prompt = DbPrompt::new(display_mode.clone());
-    let mut command_editor = build_command_editor(catalog.clone(), edit_mode, &keybindings)?;
+    let mut command_editor =
+        build_command_editor(catalog.clone(), named_sql.clone(), edit_mode, &keybindings)?;
     let command_prompt = CommandPrompt;
 
     loop {
@@ -105,6 +116,10 @@ pub async fn run(
                     &command_prompt,
                     &pool,
                     &catalog,
+                    CommandContext {
+                        named_sql: &named_sql,
+                        config_source: &config_source,
+                    },
                     &keybindings.tui,
                     &keybindings.remaps,
                 )
@@ -164,6 +179,7 @@ fn build_sql_editor(
 
 fn build_command_editor(
     catalog: SharedCatalog,
+    named_sql: NamedSqlContext,
     edit_mode: ConfigEditMode,
     keybindings: &KeybindingsConfig,
 ) -> AppResult<Reedline> {
@@ -173,7 +189,7 @@ fn build_command_editor(
     Ok(common_editor_settings(
         Reedline::create()
             .with_history(history)
-            .with_completer(Box::new(CommandCompleter::new(catalog)))
+            .with_completer(Box::new(CommandCompleter::new(catalog, named_sql)))
             .with_menu(ReedlineMenu::EngineCompleter(completion_menu))
             .with_menu(ReedlineMenu::HistoryMenu(Box::new(
                 ListMenu::default()
@@ -208,6 +224,7 @@ async fn run_command_mode(
     prompt: &CommandPrompt,
     pool: &PgPool,
     catalog: &SharedCatalog,
+    context: CommandContext<'_>,
     tui_keybindings: &TuiKeybindings,
     key_remaps: &KeyRemaps,
 ) -> AppResult<bool> {
@@ -216,15 +233,32 @@ async fn run_command_mode(
     loop {
         match editor.read_line(prompt)? {
             Signal::Success(input) if input.trim().is_empty() => return Ok(false),
-            Signal::Success(input) => match meta::execute(&input, pool, catalog).await {
-                Ok(CommandOutcome::None) => {}
-                Ok(CommandOutcome::Exit) => return Ok(true),
-                Ok(CommandOutcome::Output(output)) => {
-                    render_meta_output(output, tui_keybindings, key_remaps, DisplayMode::Auto)
-                        .await?;
+            Signal::Success(input) => {
+                match meta::execute(
+                    &input,
+                    pool,
+                    catalog,
+                    context.named_sql,
+                    context.config_source,
+                )
+                .await
+                {
+                    Ok(CommandOutcome::None) => {}
+                    Ok(CommandOutcome::Exit) => return Ok(true),
+                    Ok(CommandOutcome::Output(output)) => {
+                        render_meta_output(output, tui_keybindings, key_remaps, DisplayMode::Auto)
+                            .await?;
+                    }
+                    Ok(CommandOutcome::Run(prepared)) => {
+                        run_named_sql(pool, catalog, &prepared).await;
+                    }
+                    Ok(CommandOutcome::RunFailed(error)) => {
+                        eprintln!("{error}");
+                        eprintln!("FAILED");
+                    }
+                    Err(err) => eprintln!("{err}"),
                 }
-                Err(err) => eprintln!("{err}"),
-            },
+            }
             Signal::CtrlC => {
                 println!("^C");
             }
@@ -234,6 +268,34 @@ async fn run_command_mode(
             }
             Signal::HostCommand(_) | Signal::ExternalBreak(_) => return Ok(false),
             _ => return Ok(false),
+        }
+    }
+}
+
+async fn run_named_sql(pool: &PgPool, catalog: &SharedCatalog, prepared: &PreparedNamedSql) {
+    let result = execute_prepared(pool, prepared, false, None, |output| match output.result {
+        NamedStatementResult::Rows(grid) => println!("{}", render_grid(&grid)),
+        NamedStatementResult::RowsAffected(rows_affected) => println!(
+            "{}",
+            render_statement_status(&output.statement, rows_affected)
+        ),
+    })
+    .await;
+
+    match result {
+        Ok(_) => {}
+        Err(failure) => {
+            match (&failure.error, failure.statement.as_deref()) {
+                (AppError::Sqlx(err), Some(statement)) => {
+                    eprintln!("{}", format_statement_error(err, statement, catalog));
+                }
+                (error, _) => eprintln!("{error}"),
+            }
+            if failure.rolled_back {
+                eprintln!("ROLLED BACK");
+            } else {
+                eprintln!("FAILED");
+            }
         }
     }
 }

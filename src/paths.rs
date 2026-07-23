@@ -14,6 +14,10 @@ pub(crate) fn default_history_path(history_context: Option<&str>) -> Option<Path
     default_history_path_from_env(history_context, env::var_os)
 }
 
+pub(crate) fn default_named_sql_base_path() -> Option<PathBuf> {
+    default_named_sql_base_path_from_env(env::var_os, default_path_platform())
+}
+
 pub(crate) fn expand_home(path: &Path) -> PathBuf {
     expand_home_from_env(path, env::var_os, default_path_platform())
 }
@@ -49,6 +53,22 @@ fn default_config_path_from_env(
         }
         UserPathPlatform::Unix => home_config_path(env_var("HOME")),
     })
+}
+
+fn default_named_sql_base_path_from_env(
+    mut env_var: impl FnMut(&'static str) -> Option<OsString>,
+    platform: UserPathPlatform,
+) -> Option<PathBuf> {
+    env_path(env_var("XDG_DATA_HOME"))
+        .or_else(|| match platform {
+            UserPathPlatform::Windows => env_path(env_var("LOCALAPPDATA")).or_else(|| {
+                env_path(env_var("USERPROFILE")).map(|path| path.join("AppData").join("Local"))
+            }),
+            UserPathPlatform::Unix => {
+                env_path(env_var("HOME")).map(|path| path.join(".local").join("share"))
+            }
+        })
+        .map(|path| path.join("dbcrab").join("named-sql"))
 }
 
 fn default_history_path_from_env(
@@ -240,6 +260,37 @@ mod tests {
                     .join("dbcrab")
                     .join("config.kdl")
             )
+        );
+    }
+
+    #[test]
+    fn named_sql_path_prefers_xdg_data_home() {
+        // Given
+        let env_var = |name| match name {
+            "XDG_DATA_HOME" => Some(OsString::from("/xdg-data")),
+            "HOME" => Some(OsString::from("/home/alice")),
+            _ => None,
+        };
+
+        // When
+        let path = default_named_sql_base_path_from_env(env_var, UserPathPlatform::Unix);
+
+        // Then
+        assert_eq!(path, Some(PathBuf::from("/xdg-data/dbcrab/named-sql")));
+    }
+
+    #[test]
+    fn named_sql_path_uses_unix_data_fallback() {
+        // Given
+        let env_var = |name| (name == "HOME").then(|| OsString::from("/home/alice"));
+
+        // When
+        let path = default_named_sql_base_path_from_env(env_var, UserPathPlatform::Unix);
+
+        // Then
+        assert_eq!(
+            path,
+            Some(PathBuf::from("/home/alice/.local/share/dbcrab/named-sql"))
         );
     }
 

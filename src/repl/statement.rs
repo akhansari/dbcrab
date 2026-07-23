@@ -59,7 +59,11 @@ fn print_statement_error(err: &sqlx::Error, statement: &str, catalog: &SharedCat
     eprintln!("{}", format_statement_error(err, statement, catalog));
 }
 
-fn format_statement_error(err: &sqlx::Error, statement: &str, catalog: &SharedCatalog) -> String {
+pub(super) fn format_statement_error(
+    err: &sqlx::Error,
+    statement: &str,
+    catalog: &SharedCatalog,
+) -> String {
     let formatter = if io::stderr().is_terminal() {
         format_colored_sql_error
     } else {
@@ -94,7 +98,7 @@ async fn add_update_metadata(
     }
 }
 
-fn render_statement_status(statement: &str, rows_affected: u64) -> String {
+pub(super) fn render_statement_status(statement: &str, rows_affected: u64) -> String {
     if rows_affected > 0 || statement_reports_rows_affected(statement) {
         render_rows_affected(rows_affected)
     } else {

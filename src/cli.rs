@@ -14,7 +14,7 @@ pub enum Cli {
 pub struct Args {
     pub connection: String,
     pub config: Option<PathBuf>,
-    pub history_context: Option<String>,
+    pub context: Option<String>,
     pub mode: RunMode,
 }
 
@@ -73,7 +73,7 @@ where
             Arg::new("context")
                 .short('c')
                 .long("context")
-                .help("Use a named context for history, stored as <NAME>.history")
+                .help("Use a named context for history and named SQL")
                 .value_name("NAME"),
         )
         .arg(
@@ -111,14 +111,14 @@ where
         .arg(
             Arg::new("statement-timeout")
                 .long("statement-timeout")
-                .help("PostgreSQL statement_timeout for non-interactive SQL")
+                .help("PostgreSQL statement_timeout for non-interactive SQL and named SQL")
                 .value_name("TIMEOUT")
                 .default_value(DEFAULT_STATEMENT_TIMEOUT),
         )
         .arg(
             Arg::new("allow-write")
                 .long("allow-write")
-                .help("Allow mutating SQL and CSV import in non-interactive modes")
+                .help("Allow database and named SQL file writes in non-interactive modes")
                 .action(ArgAction::SetTrue),
         )
         .arg(
@@ -149,7 +149,7 @@ where
         .expect("clap enforces the required connection argument")
         .to_owned();
     let config = matches.get_one::<String>("config").map(PathBuf::from);
-    let history_context = matches.get_one::<String>("context").cloned();
+    let context = matches.get_one::<String>("context").cloned();
     let agent_options = agent_options(&matches, format);
     let mode = if let Some(sql) = matches.get_one::<String>("execute") {
         RunMode::Execute {
@@ -168,7 +168,7 @@ where
     Cli::Run(Args {
         connection,
         config,
-        history_context,
+        context,
         mode,
     })
 }
@@ -194,7 +194,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn context_short_option_sets_history_context() {
+    fn context_short_option_sets_application_context() {
         // Given
         let args = ["dbcrab", "-c", "app", "postgres://localhost/app"];
 
@@ -203,7 +203,7 @@ mod tests {
 
         // Then
         match cli {
-            Cli::Run(args) => assert_eq!(args.history_context, Some("app".to_owned())),
+            Cli::Run(args) => assert_eq!(args.context, Some("app".to_owned())),
             Cli::PrintDefaultConfig | Cli::PrintConfigSchema | Cli::PrintAgentGuide => {
                 panic!("expected run args")
             }

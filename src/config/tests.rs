@@ -1,6 +1,11 @@
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 use kdl::{KdlDocument, KdlNode};
 use reedline::ReedlineEvent;
+use std::{
+    fs,
+    path::PathBuf,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 use super::{
     CONFIG_SCHEMA_KDL,
@@ -8,9 +13,31 @@ use super::{
         AppConfig, CommandAction, ConfigEditMode, LineEditorAction, PromptAction, TuiAction,
         TuiKeybindings, ViRemapMode, parse_key_binding,
     },
-    parser::parse_config,
+    parser::{ConfigSource, load, parse_config},
     template::default_config,
 };
+
+#[test]
+fn loaded_config_retains_explicit_source_path() {
+    // Given
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("clock should be after Unix epoch")
+        .as_nanos();
+    let path = std::env::temp_dir().join(format!(
+        "dbcrab-config-source-{}-{unique}.kdl",
+        std::process::id()
+    ));
+    fs::write(&path, "edit-mode \"vi\"").expect("config should be written");
+
+    // When
+    let loaded = load(Some(path.clone())).expect("config should load");
+
+    // Then
+    assert_eq!(loaded.source, ConfigSource::File(path.clone()));
+    assert_eq!(loaded.settings.edit_mode, ConfigEditMode::Vi);
+    let _ = fs::remove_file(path);
+}
 
 #[test]
 fn config_schema_is_valid_kdl() {
@@ -34,6 +61,36 @@ fn default_config_kdl_matches_runtime_defaults() {
 
     // Then
     assert_eq!(config, AppConfig::default());
+}
+
+#[test]
+fn named_sql_shared_path_is_parsed() {
+    // Given
+    let text = "named-sql { shared-path \"/srv/dbcrab/shared\" }";
+
+    // When
+    let config = parse_config(text).expect("named SQL config should parse");
+
+    // Then
+    assert_eq!(
+        config.named_sql.shared_path,
+        Some(PathBuf::from("/srv/dbcrab/shared"))
+    );
+}
+
+#[test]
+fn unknown_named_sql_setting_is_rejected() {
+    // Given
+    let text = "named-sql { unknown \"value\" }";
+
+    // When
+    let result = parse_config(text);
+
+    // Then
+    assert_eq!(
+        result.expect_err("unknown setting should fail"),
+        "line 1: unknown `named-sql` node `unknown`"
+    );
 }
 
 #[test]

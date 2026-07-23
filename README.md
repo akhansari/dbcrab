@@ -76,7 +76,8 @@ command mode uses Vi editing too, so `Esc` first leaves insert mode and a second
 Common commands:
 
 - `help`, show all commands.
-- `connection`, show safe connection and session details.
+- `connection`, show safe connection details.
+- `session`, show DBCrab session details.
 - `refresh`, reload metadata used by autocomplete.
 - `schemas`, list schemas.
 - `databases`, list databases.
@@ -91,12 +92,56 @@ Common commands:
 - `source active_users`, show a function, procedure, or view definition.
 - `export table --name users --output ./users.csv`, export a relation to CSV.
 - `import table --name users --input ./users.csv`, import CSV rows into a table.
+- `run reports/monthly month=2026-07`, run named SQL.
+- `named list`, list named SQL in the active context.
 - `quit`, exit DBCrab.
 
 Most list commands accept a filter, for example `tables user`. Some commands can
 include system objects with the `-x` flag, for example `tables pg_catalog -x`.
 Use `help describe`, `help source`, `help import`, or `help export` for
 command-specific examples.
+
+### Named SQL
+
+Named SQL stores reusable `.sql` files and isolates them by context. Use `run`
+as the short execution command or `named run` as the fully qualified form:
+
+```text
+: named save reports/monthly
+: named save users/by-id select * from users where id = :id::uuid;
+: run users/by-id id=8b7347d4-7a2d-4be0-86ad-e4cb035afc4c
+: named info users/by-id
+: named list
+: named delete users/by-id
+```
+
+Names are extensionless, lowercase paths. DBCrab appends `.sql`, so
+`users/by-id` maps to `users/by-id.sql`. `named save` treats everything after
+the name as SQL and overwrites an existing entry. Structurally invalid SQL is
+saved with validation warnings so drafts remain editable.
+
+In the interactive REPL, omit the SQL to open the target file with `$EDITOR`,
+falling back to `$VISUAL`. The configured command may include arguments and
+must wait for editing to finish; for example, use `VISUAL="code --wait"` rather
+than `EDITOR=code`. Exiting without saving a new file cancels the save.
+
+Parameters use lowercase `:name` markers and `name=value` arguments. Values are
+bound through PostgreSQL rather than interpolated into SQL. Add PostgreSQL casts
+for non-text values, such as `:limit::integer` or `:id::uuid`. Unquoted `null`
+binds SQL `NULL`; quote it to bind the text `null`. Missing, duplicate, and
+unexpected arguments are rejected.
+
+A file may contain multiple statements. DBCrab executes all statements in one
+transaction, streams each result inline, and finishes with `committed` or
+`rolled_back`. Read-only unattended runs roll back after successful execution
+and finish with `completed`, matching ordinary agent SQL safety. Explicit
+`BEGIN`, `COMMIT`, and other transaction-boundary statements are rejected
+because DBCrab owns the transaction.
+
+Use `named list --shared` to list shared entries and `named list --all` to list
+both active-context and shared entries. In a named context, shared SQL must be
+qualified explicitly, for example `run shared/health-check`. Without a named
+context, `health-check` and `shared/health-check` resolve to the same entry.
 
 ### Result Display
 
@@ -157,12 +202,32 @@ it falls back to `$HOME/.local/state/dbcrab/history`. On Windows, it uses
 `%LOCALAPPDATA%\dbcrab\history` and falls back to
 `%USERPROFILE%\AppData\Local\dbcrab\history`.
 
-Use a named history context when you want separate histories for different
+Use a named context when you want separate history and named SQL for different
 projects or databases:
 
 ```sh
 dbcrab postgres://user@localhost/app -c my_app
 ```
+
+When no context is selected, the logical context is `shared`; it retains the
+existing default history filename. Named SQL follows the platform data path.
+It uses `$XDG_DATA_HOME/dbcrab/named-sql` when configured, falls back to
+`$HOME/.local/share/dbcrab/named-sql` on Unix-like systems, and uses the local
+application-data directory on Windows. Its default scope layout uses one
+top-level directory per scope: `shared/` and `<context>/`.
+
+Projects can define a strict `dbcrab.kdl` in the current directory. If absent,
+DBCrab checks the Git root. A current-directory file wins rather than merging:
+
+```kdl
+context "billing"
+named-sql-path "./sql"
+```
+
+The path resolves relative to `dbcrab.kdl` and points directly to that
+context's query root. `--context` overrides the project context; when it selects
+a different name, the project path is ignored and the default context path is
+used.
 
 ### Configuration
 
@@ -177,6 +242,10 @@ Start with only the settings you want to change:
 /- kdl-version 2
 
 edit-mode emacs // or vi
+
+named-sql {
+    // shared-path "~/my-shared-sql"
+}
 
 keybindings {
     editor {

@@ -1,4 +1,10 @@
-use std::{collections::HashSet, path::PathBuf};
+use std::{
+    collections::HashSet,
+    env,
+    io::{self, Write},
+    path::{Path, PathBuf},
+    process,
+};
 
 use clap::{Arg, ArgAction, ArgGroup, Command};
 use nu_ansi_term::{Color, Style};
@@ -7,7 +13,11 @@ use sqlx::{PgPool, Row};
 
 use crate::{
     catalog::{Catalog, SharedCatalog, identifier_matches_prefix, quote_identifier},
+    config::ConfigSource,
     errors::{AppError, AppResult},
+    named_sql::{
+        NamedSql, NamedSqlContext, NamedSqlScope, NamedValue, PreparedNamedSql, parse_named_value,
+    },
     render::{CellValue, ResultGrid},
     transfer::{self, ExportOptions, ImportOptions, TransferSummary},
 };
@@ -33,6 +43,7 @@ const SOURCE_FLAGS: &[&str] = &["-f", "--function", "-v", "--view", "-x", "--sys
 const IMPORT_FLAGS: &[&str] = &["--name", "--input", "--format", "--no-header"];
 const EXPORT_TABLE_FLAGS: &[&str] = &["--name", "--output", "--format", "--no-header", "--force"];
 const EXPORT_QUERY_FLAGS: &[&str] = &["--sql", "--output", "--format", "--no-header", "--force"];
+const NAMED_LIST_FLAGS: &[&str] = &["--shared", "--all"];
 const COMMANDS: &[CommandInfo] = &[
     CommandInfo {
         name: "help",
@@ -44,9 +55,16 @@ const COMMANDS: &[CommandInfo] = &[
     CommandInfo {
         name: "connection",
         usage: "connection",
-        description: "Show safe connection and session details",
+        description: "Show safe connection details",
         flags: "-h --help",
         examples: "connection",
+    },
+    CommandInfo {
+        name: "session",
+        usage: "session",
+        description: "Show DBCrab session details",
+        flags: "-h --help",
+        examples: "session",
     },
     CommandInfo {
         name: "refresh",
@@ -147,6 +165,20 @@ const COMMANDS: &[CommandInfo] = &[
         examples: "export table --name users --output ./users.csv\nexport query --sql \"select * from users where active\" --output ./active.csv",
     },
     CommandInfo {
+        name: "run",
+        usage: "run <name> [name=value ...]",
+        description: "Run named SQL",
+        flags: "-h --help",
+        examples: "run users/by-id id=42\nrun shared/health-check",
+    },
+    CommandInfo {
+        name: "named",
+        usage: "named run|save|info|list|status|delete ...",
+        description: "Manage and run named SQL",
+        flags: "list: --shared --all, -h --help",
+        examples: "named status\nnamed list\nnamed info users/by-id\nnamed save health\nnamed save health select 1",
+    },
+    CommandInfo {
         name: "quit",
         usage: "quit",
         description: "Exit DBCrab",
@@ -166,11 +198,13 @@ pub struct MetaSection {
     pub grid: ResultGrid,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub enum CommandOutcome {
     None,
     Exit,
     Output(MetaOutput),
+    Run(PreparedNamedSql),
+    RunFailed(AppError),
 }
 
 pub struct CommandValidator;
@@ -184,17 +218,18 @@ impl Validator for CommandValidator {
 #[derive(Clone)]
 pub struct CommandCompleter {
     catalog: SharedCatalog,
+    named_sql: NamedSqlContext,
 }
 
 impl CommandCompleter {
-    pub fn new(catalog: SharedCatalog) -> Self {
-        Self { catalog }
+    pub fn new(catalog: SharedCatalog, named_sql: NamedSqlContext) -> Self {
+        Self { catalog, named_sql }
     }
 }
 
 impl Completer for CommandCompleter {
     fn complete(&mut self, line: &str, pos: usize) -> Vec<Suggestion> {
-        command_suggestions(line, pos, &self.catalog)
+        command_suggestions_with_named(line, pos, &self.catalog, Some(&self.named_sql))
     }
 }
 
@@ -242,6 +277,7 @@ enum ParsedCommand {
     None,
     Help(Option<String>),
     Connection,
+    Session,
     Refresh,
     List {
         kind: ListKind,
@@ -270,6 +306,21 @@ enum ParsedCommand {
         query: String,
         options: ExportOptions,
     },
+    NamedRun {
+        name: String,
+        values: Vec<NamedValue>,
+    },
+    NamedSave {
+        name: String,
+        sql: Option<String>,
+    },
+    NamedInfo(String),
+    NamedList {
+        shared: bool,
+        all: bool,
+    },
+    NamedStatus,
+    NamedDelete(String),
     Quit,
 }
 
@@ -310,20 +361,34 @@ pub async fn execute(
     input: &str,
     pool: &PgPool,
     completion_catalog: &SharedCatalog,
+    named_sql: &NamedSqlContext,
+    config_source: &ConfigSource,
 ) -> AppResult<CommandOutcome> {
-    execute_with_metadata_mode(input, pool, completion_catalog, MetadataMode::Interactive).await
+    execute_with_metadata_mode(
+        input,
+        pool,
+        completion_catalog,
+        Some(named_sql),
+        Some(config_source),
+        MetadataMode::Interactive,
+    )
+    .await
 }
 
 pub async fn execute_unattended(
     input: &str,
     pool: &PgPool,
     completion_catalog: &SharedCatalog,
+    named_sql: Option<&NamedSqlContext>,
+    config_source: Option<&ConfigSource>,
     allow_write: bool,
 ) -> AppResult<CommandOutcome> {
     execute_with_metadata_mode(
         input,
         pool,
         completion_catalog,
+        named_sql,
+        config_source,
         MetadataMode::Unattended { allow_write },
     )
     .await
@@ -339,12 +404,19 @@ async fn execute_with_metadata_mode(
     input: &str,
     pool: &PgPool,
     completion_catalog: &SharedCatalog,
+    named_sql: Option<&NamedSqlContext>,
+    config_source: Option<&ConfigSource>,
     metadata_mode: MetadataMode,
 ) -> AppResult<CommandOutcome> {
     match parse_command(input)? {
         ParsedCommand::None => Ok(CommandOutcome::None),
         ParsedCommand::Help(command) => Ok(output(help_output(command.as_deref()))),
         ParsedCommand::Connection => Ok(output(connection_output(pool).await?)),
+        ParsedCommand::Session => {
+            let named_sql = require_named_sql_context(named_sql)?;
+            let config_source = require_config_source(config_source)?;
+            Ok(output(vec![session_section(named_sql, config_source)]))
+        }
         ParsedCommand::Refresh => refresh_output(pool, completion_catalog, metadata_mode).await,
         ParsedCommand::List {
             kind,
@@ -380,12 +452,347 @@ async fn execute_with_metadata_mode(
         ParsedCommand::ExportQuery { query, options } => Ok(output(vec![transfer_section(
             transfer::export_query(pool, &query, options).await?,
         )])),
+        ParsedCommand::NamedRun { name, values } => {
+            let named_sql = require_named_sql_context(named_sql)?;
+            Ok(match named_sql.prepare(&name, &values) {
+                Ok(prepared) => CommandOutcome::Run(prepared),
+                Err(error) => CommandOutcome::RunFailed(error),
+            })
+        }
+        ParsedCommand::NamedSave { name, sql } => {
+            let named_sql = require_named_sql_context(named_sql)?;
+            match sql {
+                Some(sql) => {
+                    require_unattended_write(metadata_mode, "named save")?;
+                    Ok(output(named_save_output(named_sql.save(&name, &sql)?)))
+                }
+                None if matches!(metadata_mode, MetadataMode::Unattended { .. }) => {
+                    Err(AppError::message(
+                        "named save without SQL is only available in the interactive REPL",
+                    ))
+                }
+                None => Ok(output(edit_named_sql(named_sql, &name)?)),
+            }
+        }
+        ParsedCommand::NamedInfo(name) => {
+            let named_sql = require_named_sql_context(named_sql)?;
+            Ok(output(named_info_output(named_sql, named_sql.read(&name)?)))
+        }
+        ParsedCommand::NamedList { shared, all } => {
+            let named_sql = require_named_sql_context(named_sql)?;
+            Ok(output(named_list_output(named_sql, shared, all)?))
+        }
+        ParsedCommand::NamedStatus => {
+            let named_sql = require_named_sql_context(named_sql)?;
+            Ok(output(named_status_output(named_sql)))
+        }
+        ParsedCommand::NamedDelete(name) => {
+            let named_sql = require_named_sql_context(named_sql)?;
+            require_unattended_write(metadata_mode, "named delete")?;
+            if matches!(metadata_mode, MetadataMode::Interactive) && !confirm_named_delete(&name)? {
+                return Ok(output(vec![section(
+                    "Named SQL",
+                    ResultGrid::from_records(["status", "name"], [["cancelled", name.as_str()]]),
+                )]));
+            }
+            let path = named_sql.delete(&name)?;
+            Ok(output(vec![section(
+                "Named SQL",
+                ResultGrid::from_records(
+                    ["status", "name", "path"],
+                    [["deleted".to_owned(), name, path.display().to_string()]],
+                ),
+            )]))
+        }
         ParsedCommand::Quit => Ok(CommandOutcome::Exit),
     }
 }
 
+pub fn command_uses_runtime_config(input: &str) -> bool {
+    matches!(
+        input.split_whitespace().next(),
+        Some("session" | "run" | "named")
+    )
+}
+
+fn require_named_sql_context(context: Option<&NamedSqlContext>) -> AppResult<&NamedSqlContext> {
+    context.ok_or_else(|| AppError::message("named SQL context was not loaded"))
+}
+
+fn require_config_source(source: Option<&ConfigSource>) -> AppResult<&ConfigSource> {
+    source.ok_or_else(|| AppError::message("runtime configuration was not loaded"))
+}
+
 fn output(sections: Vec<MetaSection>) -> CommandOutcome {
     CommandOutcome::Output(MetaOutput { sections })
+}
+
+fn named_save_output(named_sql: NamedSql) -> Vec<MetaSection> {
+    let validity = validation_summary(&named_sql.analysis.diagnostics);
+    let mut sections = vec![section(
+        "Named SQL",
+        ResultGrid::from_records(
+            ["status", "name", "path", "validity"],
+            [[
+                "saved".to_owned(),
+                named_sql.name,
+                named_sql.path.display().to_string(),
+                validity,
+            ]],
+        ),
+    )];
+    if !named_sql.analysis.diagnostics.is_empty() {
+        sections.push(section(
+            "Validation warnings",
+            ResultGrid::from_records(
+                ["warning"],
+                named_sql
+                    .analysis
+                    .diagnostics
+                    .into_iter()
+                    .map(|warning| [warning]),
+            ),
+        ));
+    }
+    sections
+}
+
+fn edit_named_sql(context: &NamedSqlContext, name: &str) -> AppResult<Vec<MetaSection>> {
+    let path = context.prepare_save_path(name)?;
+    let editor = configured_editor()?;
+    run_editor(&editor, &path)?;
+
+    if path.try_exists().map_err(|err| {
+        AppError::message(format!(
+            "failed to inspect named SQL path `{}` after editing: {err}",
+            path.display()
+        ))
+    })? {
+        return Ok(named_save_output(context.read(name)?));
+    }
+
+    Ok(vec![section(
+        "Named SQL",
+        ResultGrid::from_records(
+            ["status", "name", "path"],
+            [[
+                "cancelled".to_owned(),
+                name.to_owned(),
+                path.display().to_string(),
+            ]],
+        ),
+    )])
+}
+
+#[derive(Debug, Eq, PartialEq)]
+struct ConfiguredEditor {
+    variable: &'static str,
+    command: String,
+}
+
+fn configured_editor() -> AppResult<ConfiguredEditor> {
+    let editor = environment_value("EDITOR")?;
+    let visual = if editor
+        .as_deref()
+        .is_some_and(|value| !value.trim().is_empty())
+    {
+        None
+    } else {
+        environment_value("VISUAL")?
+    };
+    select_editor(editor, visual)
+}
+
+fn environment_value(name: &'static str) -> AppResult<Option<String>> {
+    match env::var(name) {
+        Ok(value) => Ok(Some(value)),
+        Err(env::VarError::NotPresent) => Ok(None),
+        Err(env::VarError::NotUnicode(_)) => {
+            Err(AppError::message(format!("${name} is not valid UTF-8")))
+        }
+    }
+}
+
+fn select_editor(editor: Option<String>, visual: Option<String>) -> AppResult<ConfiguredEditor> {
+    editor
+        .filter(|value| !value.trim().is_empty())
+        .map(|command| ConfiguredEditor {
+            variable: "EDITOR",
+            command,
+        })
+        .or_else(|| {
+            visual
+                .filter(|value| !value.trim().is_empty())
+                .map(|command| ConfiguredEditor {
+                    variable: "VISUAL",
+                    command,
+                })
+        })
+        .ok_or_else(|| {
+            AppError::message("named save without SQL requires $EDITOR or $VISUAL to be set")
+        })
+}
+
+fn run_editor(editor: &ConfiguredEditor, path: &Path) -> AppResult<()> {
+    let tokens = tokenize(&editor.command)
+        .map_err(|err| AppError::message(format!("failed to parse ${}: {err}", editor.variable)))?;
+    let (program, arguments) = tokens.split_first().ok_or_else(|| {
+        AppError::message(format!(
+            "${} does not contain an editor command",
+            editor.variable
+        ))
+    })?;
+    let status = process::Command::new(&program.cooked)
+        .args(arguments.iter().map(|argument| &argument.cooked))
+        .arg(path)
+        .status()
+        .map_err(|err| {
+            AppError::message(format!(
+                "failed to launch editor `{}` from ${}: {err}",
+                program.cooked, editor.variable
+            ))
+        })?;
+
+    if status.success() {
+        Ok(())
+    } else {
+        Err(AppError::message(format!(
+            "editor `{}` exited with {status}",
+            program.cooked
+        )))
+    }
+}
+
+fn named_info_output(context: &NamedSqlContext, named_sql: NamedSql) -> Vec<MetaSection> {
+    let details = [
+        ["name".to_owned(), named_sql.name],
+        [
+            "scope".to_owned(),
+            context.scope_label(named_sql.scope).to_owned(),
+        ],
+        ["path".to_owned(), named_sql.path.display().to_string()],
+        [
+            "parameters".to_owned(),
+            parameter_summary(&named_sql.analysis.parameters),
+        ],
+        [
+            "statements".to_owned(),
+            named_sql.analysis.statements.len().to_string(),
+        ],
+        [
+            "validity".to_owned(),
+            validation_summary(&named_sql.analysis.diagnostics),
+        ],
+    ];
+    let mut sections = vec![section(
+        "Named SQL info",
+        ResultGrid::from_records(["field", "value"], details),
+    )];
+    if !named_sql.analysis.diagnostics.is_empty() {
+        sections.push(section(
+            "Validation",
+            ResultGrid::from_records(
+                ["diagnostic"],
+                named_sql
+                    .analysis
+                    .diagnostics
+                    .iter()
+                    .map(|diagnostic| [diagnostic]),
+            ),
+        ));
+    }
+    sections.push(section(
+        "SQL",
+        ResultGrid::from_records(["sql"], [[named_sql.sql]]),
+    ));
+    sections
+}
+
+fn named_list_output(
+    context: &NamedSqlContext,
+    shared: bool,
+    all: bool,
+) -> AppResult<Vec<MetaSection>> {
+    let entries = context.list(shared, all)?;
+    Ok(vec![section(
+        format!("Named SQL ({})", context.display_name()),
+        ResultGrid::from_records(
+            ["name", "parameters", "validity"],
+            entries.into_iter().map(|entry| {
+                [
+                    entry.name,
+                    parameter_summary(&entry.parameters),
+                    validation_summary(&entry.diagnostics),
+                ]
+            }),
+        ),
+    )])
+}
+
+fn named_status_output(context: &NamedSqlContext) -> Vec<MetaSection> {
+    let details = [
+        [
+            "active context".to_owned(),
+            context.display_name().to_owned(),
+        ],
+        [
+            "active root".to_owned(),
+            context.root(NamedSqlScope::Local).display().to_string(),
+        ],
+        [
+            "active root source".to_owned(),
+            context.root_source_label(NamedSqlScope::Local),
+        ],
+        [
+            "shared root".to_owned(),
+            context.root(NamedSqlScope::Shared).display().to_string(),
+        ],
+        [
+            "shared root source".to_owned(),
+            context.root_source_label(NamedSqlScope::Shared),
+        ],
+    ];
+    vec![section(
+        "Named SQL status",
+        ResultGrid::from_records(["field", "value"], details),
+    )]
+}
+
+fn parameter_summary(parameters: &[String]) -> String {
+    if parameters.is_empty() {
+        "-".to_owned()
+    } else {
+        parameters.join(", ")
+    }
+}
+
+fn validation_summary(diagnostics: &[String]) -> String {
+    if diagnostics.is_empty() {
+        "valid".to_owned()
+    } else {
+        format!("invalid: {}", diagnostics.join("; "))
+    }
+}
+
+fn require_unattended_write(mode: MetadataMode, command: &str) -> AppResult<()> {
+    if matches!(mode, MetadataMode::Unattended { allow_write: false }) {
+        Err(AppError::message(format!(
+            "non-interactive {command} requires the top-level --allow-write flag"
+        )))
+    } else {
+        Ok(())
+    }
+}
+
+fn confirm_named_delete(name: &str) -> AppResult<bool> {
+    print!("Delete named SQL `{name}`? [y/N] ");
+    io::stdout().flush()?;
+    let mut answer = String::new();
+    io::stdin().read_line(&mut answer)?;
+    Ok(matches!(
+        answer.trim().to_ascii_lowercase().as_str(),
+        "y" | "yes"
+    ))
 }
 
 fn parse_command(input: &str) -> AppResult<ParsedCommand> {
@@ -393,7 +800,19 @@ fn parse_command(input: &str) -> AppResult<ParsedCommand> {
     if input.is_empty() {
         return Ok(ParsedCommand::None);
     }
-    if input.contains(';') && !is_export_query_command(input) {
+    if is_named_save_command(input)
+        && !input
+            .split_whitespace()
+            .nth(2)
+            .is_some_and(|word| matches!(word, "-h" | "--help"))
+    {
+        return parse_named_save(input);
+    }
+    if input.contains(';')
+        && !is_export_query_command(input)
+        && !is_named_save_command(input)
+        && !is_named_run_command(input)
+    {
         return Err(AppError::message(
             "Commands do not use semicolons. Try the command again without `;`.",
         ));
@@ -419,6 +838,7 @@ fn parse_command(input: &str) -> AppResult<ParsedCommand> {
     match name {
         "help" => Ok(ParsedCommand::Help(command_help_target(&tokens))),
         "connection" => Ok(ParsedCommand::Connection),
+        "session" => Ok(ParsedCommand::Session),
         "refresh" => Ok(ParsedCommand::Refresh),
         "schemas" => Ok(ParsedCommand::List {
             kind: ListKind::Schemas,
@@ -477,6 +897,8 @@ fn parse_command(input: &str) -> AppResult<ParsedCommand> {
         }),
         "import" => parse_import_command(matches),
         "export" => parse_export_command(matches),
+        "run" => parse_named_run(&tokens, 1),
+        "named" => parse_named_command(matches, &tokens),
         "quit" => Ok(ParsedCommand::Quit),
         _ => unreachable!("clap only returns configured commands"),
     }
@@ -489,6 +911,7 @@ fn command_spec() -> Command {
         .disable_help_subcommand(true)
         .subcommand(Command::new("help").arg(words_arg("command", false)))
         .subcommand(Command::new("connection"))
+        .subcommand(Command::new("session"))
         .subcommand(Command::new("refresh"))
         .subcommand(list_command("schemas"))
         .subcommand(Command::new("databases").arg(words_arg("filter", false)))
@@ -529,7 +952,39 @@ fn command_spec() -> Command {
         )
         .subcommand(import_command())
         .subcommand(export_command())
+        .subcommand(named_run_command("run"))
+        .subcommand(named_command())
         .subcommand(Command::new("quit"))
+}
+
+fn named_command() -> Command {
+    Command::new("named")
+        .subcommand_required(true)
+        .subcommand(named_run_command("run"))
+        .subcommand(
+            Command::new("save")
+                .arg(Arg::new("name").required(true))
+                .arg(Arg::new("sql").num_args(1..)),
+        )
+        .subcommand(Command::new("info").arg(Arg::new("name").required(true)))
+        .subcommand(Command::new("status"))
+        .subcommand(
+            Command::new("list")
+                .arg(Arg::new("shared").long("shared").action(ArgAction::SetTrue))
+                .arg(Arg::new("all").long("all").action(ArgAction::SetTrue))
+                .group(
+                    ArgGroup::new("scope")
+                        .args(["shared", "all"])
+                        .multiple(false),
+                ),
+        )
+        .subcommand(Command::new("delete").arg(Arg::new("name").required(true)))
+}
+
+fn named_run_command(name: &'static str) -> Command {
+    Command::new(name)
+        .arg(Arg::new("name").required(true))
+        .arg(Arg::new("params").num_args(0..).allow_hyphen_values(true))
 }
 
 fn import_command() -> Command {
@@ -630,6 +1085,80 @@ fn parse_export_command(matches: &clap::ArgMatches) -> AppResult<ParsedCommand> 
     }
 }
 
+fn parse_named_command(matches: &clap::ArgMatches, tokens: &[Token]) -> AppResult<ParsedCommand> {
+    let Some((subcommand, matches)) = matches.subcommand() else {
+        return Err(AppError::message("named requires a subcommand"));
+    };
+    match subcommand {
+        "run" => parse_named_run(tokens, 2),
+        "save" => Ok(ParsedCommand::NamedSave {
+            name: required_positional(matches, "name")?,
+            sql: matches
+                .get_many::<String>("sql")
+                .map(|values| values.cloned().collect::<Vec<_>>().join(" ")),
+        }),
+        "info" => Ok(ParsedCommand::NamedInfo(required_positional(
+            matches, "name",
+        )?)),
+        "list" => Ok(ParsedCommand::NamedList {
+            shared: matches.get_flag("shared"),
+            all: matches.get_flag("all"),
+        }),
+        "status" => Ok(ParsedCommand::NamedStatus),
+        "delete" => Ok(ParsedCommand::NamedDelete(required_positional(
+            matches, "name",
+        )?)),
+        _ => Err(AppError::message("unknown named subcommand")),
+    }
+}
+
+fn parse_named_run(tokens: &[Token], name_index: usize) -> AppResult<ParsedCommand> {
+    let name = tokens
+        .get(name_index)
+        .map(|token| token.cooked.clone())
+        .ok_or_else(|| AppError::message("run requires a named SQL name"))?;
+    let values = tokens
+        .iter()
+        .skip(name_index + 1)
+        .map(|token| parse_named_value(&token.raw, &token.cooked))
+        .collect::<AppResult<Vec<_>>>()?;
+    Ok(ParsedCommand::NamedRun { name, values })
+}
+
+fn parse_named_save(input: &str) -> AppResult<ParsedCommand> {
+    let after_named = input
+        .strip_prefix("named")
+        .and_then(|input| input.strip_prefix(char::is_whitespace))
+        .map(str::trim_start)
+        .ok_or_else(|| AppError::message("invalid named save command"))?;
+    let after_save = after_named
+        .strip_prefix("save")
+        .and_then(|input| input.strip_prefix(char::is_whitespace))
+        .map(str::trim_start)
+        .ok_or_else(|| AppError::message("named save requires a name"))?;
+    let (name, sql) = after_save.find(char::is_whitespace).map_or_else(
+        || (after_save, None),
+        |name_end| {
+            let sql = after_save[name_end..].trim_start();
+            (
+                &after_save[..name_end],
+                (!sql.is_empty()).then(|| sql.to_owned()),
+            )
+        },
+    );
+    Ok(ParsedCommand::NamedSave {
+        name: name.to_owned(),
+        sql,
+    })
+}
+
+fn required_positional(matches: &clap::ArgMatches, id: &str) -> AppResult<String> {
+    matches
+        .get_one::<String>(id)
+        .cloned()
+        .ok_or_else(|| AppError::message(format!("missing required {id}")))
+}
+
 fn required_value(matches: &clap::ArgMatches, id: &str) -> AppResult<String> {
     matches
         .get_one::<String>(id)
@@ -640,6 +1169,20 @@ fn required_value(matches: &clap::ArgMatches, id: &str) -> AppResult<String> {
 fn is_export_query_command(input: &str) -> bool {
     let mut words = input.split_whitespace();
     words.next() == Some("export") && words.next() == Some("query")
+}
+
+fn is_named_save_command(input: &str) -> bool {
+    let mut words = input.split_whitespace();
+    words.next() == Some("named") && words.next() == Some("save")
+}
+
+fn is_named_run_command(input: &str) -> bool {
+    let mut words = input.split_whitespace();
+    match words.next() {
+        Some("run") => true,
+        Some("named") => words.next() == Some("run"),
+        _ => false,
+    }
 }
 
 fn list_command(name: &'static str) -> Command {
@@ -862,6 +1405,31 @@ async fn connection_output(pool: &PgPool) -> AppResult<Vec<MetaSection>> {
     .await?;
 
     Ok(vec![section("Connection", ResultGrid::from_rows(&rows))])
+}
+
+fn session_section(named_sql: &NamedSqlContext, config_source: &ConfigSource) -> MetaSection {
+    let history = named_sql
+        .history_path()
+        .map_or_else(|| "disabled".to_owned(), |path| path.display().to_string());
+    section(
+        "DBCrab session",
+        ResultGrid::from_records(
+            ["field", "value"],
+            [
+                ["context".to_owned(), named_sql.display_name().to_owned()],
+                [
+                    "context source".to_owned(),
+                    named_sql.context_source_label(),
+                ],
+                ["history".to_owned(), history],
+                ["user config".to_owned(), config_source.label()],
+                [
+                    "project config".to_owned(),
+                    named_sql.project_config_label(),
+                ],
+            ],
+        ),
+    )
 }
 
 async fn list_output(
@@ -1366,7 +1934,17 @@ fn command_info_row(info: &CommandInfo) -> [String; 5] {
     ]
 }
 
+#[cfg(test)]
 fn command_suggestions(line: &str, pos: usize, catalog: &SharedCatalog) -> Vec<Suggestion> {
+    command_suggestions_with_named(line, pos, catalog, None)
+}
+
+fn command_suggestions_with_named(
+    line: &str,
+    pos: usize,
+    catalog: &SharedCatalog,
+    named_sql: Option<&NamedSqlContext>,
+) -> Vec<Suggestion> {
     let pos = pos.min(line.len());
     let span = command_token_span(line, pos);
     let prefix = &line[span.start..span.end];
@@ -1383,8 +1961,18 @@ fn command_suggestions(line: &str, pos: usize, catalog: &SharedCatalog) -> Vec<S
             .collect::<Vec<_>>()
     } else if matches!(command, "import" | "export") && words_before.len() == 1 {
         transfer_subcommand_suggestions(command, prefix, span)
+    } else if command == "named" && words_before.len() == 1 {
+        named_subcommand_suggestions(prefix, span)
     } else if prefix.starts_with('-') {
         flag_suggestions(command, subcommand, prefix, span)
+    } else if (command == "run" && words_before.len() == 1)
+        || (command == "named"
+            && words_before.len() == 2
+            && matches!(subcommand, Some("run" | "save" | "info" | "delete")))
+    {
+        named_sql.map_or_else(Vec::new, |named_sql| {
+            named_sql_name_suggestions(named_sql, prefix, span)
+        })
     } else if (matches!(command, "import" | "export") && previous == Some("--name"))
         || matches!(command, "describe" | "source" | "tables" | "views")
     {
@@ -1394,6 +1982,35 @@ fn command_suggestions(line: &str, pos: usize, catalog: &SharedCatalog) -> Vec<S
     };
 
     dedupe_suggestions(candidates)
+}
+
+fn named_subcommand_suggestions(prefix: &str, span: Span) -> Vec<Suggestion> {
+    [
+        ("run", "Run named SQL"),
+        ("save", "Save named SQL"),
+        ("info", "Inspect named SQL"),
+        ("list", "List named SQL"),
+        ("status", "Show named SQL storage"),
+        ("delete", "Delete named SQL"),
+    ]
+    .into_iter()
+    .filter(|(name, _)| name.starts_with(prefix))
+    .map(|(name, description)| command_suggestion(name, description, span, true))
+    .collect()
+}
+
+fn named_sql_name_suggestions(
+    named_sql: &NamedSqlContext,
+    prefix: &str,
+    span: Span,
+) -> Vec<Suggestion> {
+    named_sql
+        .completion_names()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|name| name.starts_with(prefix))
+        .map(|name| command_suggestion(&name, "named SQL", span, true))
+        .collect()
 }
 
 fn transfer_subcommand_suggestions(command: &str, prefix: &str, span: Span) -> Vec<Suggestion> {
@@ -1451,6 +2068,7 @@ fn flag_suggestions(
         ("import", Some("table")) => IMPORT_FLAGS,
         ("export", Some("table")) => EXPORT_TABLE_FLAGS,
         ("export", Some("query")) => EXPORT_QUERY_FLAGS,
+        ("named", Some("list")) => NAMED_LIST_FLAGS,
         (
             "schemas" | "extensions" | "tables" | "views" | "functions" | "types" | "privileges",
             _,
@@ -2129,6 +2747,91 @@ mod tests {
     use crate::catalog::shared_catalog;
 
     #[test]
+    fn named_status_reports_only_named_sql_storage() {
+        // Given
+        let cwd = env::temp_dir().join(format!("dbcrab-meta-status-{}", process::id()));
+        let base = env::temp_dir().join(format!("dbcrab-meta-data-{}", process::id()));
+        let context = NamedSqlContext::load_from_with_base(
+            &cwd,
+            Some("billing"),
+            &crate::config::NamedSqlConfig::default(),
+            base.clone(),
+        )
+        .expect("context should load");
+
+        // When
+        let sections = named_status_output(&context);
+
+        // Then
+        assert_eq!(sections[0].title, "Named SQL status");
+        assert_eq!(
+            sections[0].grid,
+            ResultGrid::from_records(
+                ["field", "value"],
+                [
+                    ["active context".to_owned(), "billing".to_owned()],
+                    [
+                        "active root".to_owned(),
+                        base.join("billing").display().to_string(),
+                    ],
+                    [
+                        "active root source".to_owned(),
+                        "default data directory".to_owned(),
+                    ],
+                    [
+                        "shared root".to_owned(),
+                        base.join("shared").display().to_string(),
+                    ],
+                    [
+                        "shared root source".to_owned(),
+                        "default data directory".to_owned(),
+                    ],
+                ],
+            )
+        );
+    }
+
+    #[test]
+    fn session_reports_context_history_and_config_sources() {
+        // Given
+        let cwd = env::temp_dir().join(format!("dbcrab-meta-session-{}", process::id()));
+        let base = env::temp_dir().join(format!("dbcrab-meta-data-{}", process::id()));
+        let context = NamedSqlContext::load_from_with_base(
+            &cwd,
+            Some("billing"),
+            &crate::config::NamedSqlConfig::default(),
+            base,
+        )
+        .expect("context should load");
+        let config_source = ConfigSource::File(PathBuf::from("/etc/dbcrab/config.kdl"));
+        let history = context
+            .history_path()
+            .map_or_else(|| "disabled".to_owned(), |path| path.display().to_string());
+
+        // When
+        let session = session_section(&context, &config_source);
+
+        // Then
+        assert_eq!(session.title, "DBCrab session");
+        assert_eq!(
+            session.grid,
+            ResultGrid::from_records(
+                ["field", "value"],
+                [
+                    ["context".to_owned(), "billing".to_owned()],
+                    ["context source".to_owned(), "--context".to_owned()],
+                    ["history".to_owned(), history],
+                    [
+                        "user config".to_owned(),
+                        "/etc/dbcrab/config.kdl".to_owned(),
+                    ],
+                    ["project config".to_owned(), "none".to_owned()],
+                ],
+            )
+        );
+    }
+
+    #[test]
     fn parser_accepts_import_table_options() {
         // Given
         let input = "import table --name public.users --input ./users.csv --no-header";
@@ -2170,6 +2873,237 @@ mod tests {
     }
 
     #[test]
+    fn parser_preserves_named_save_sql_verbatim() {
+        // Given
+        let input = "named save reports/monthly select ':unfinished;";
+
+        // When
+        let parsed = parse_command(input).expect("named save should parse invalid SQL as a draft");
+
+        // Then
+        match parsed {
+            ParsedCommand::NamedSave { name, sql } => {
+                assert_eq!(name, "reports/monthly");
+                assert_eq!(sql.as_deref(), Some("select ':unfinished;"));
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parser_accepts_named_save_without_sql() {
+        // Given
+        let input = "named save reports/monthly";
+
+        // When
+        let parsed = parse_command(input).expect("named save should parse without SQL");
+
+        // Then
+        assert!(matches!(
+            parsed,
+            ParsedCommand::NamedSave { name, sql: None } if name == "reports/monthly"
+        ));
+    }
+
+    #[test]
+    fn editor_selection_falls_back_to_visual() {
+        // Given
+        let editor = Some("   ".to_owned());
+        let visual = Some("code --wait".to_owned());
+
+        // When
+        let configured = select_editor(editor, visual).expect("VISUAL should be selected");
+
+        // Then
+        assert_eq!(
+            configured,
+            ConfiguredEditor {
+                variable: "VISUAL",
+                command: "code --wait".to_owned(),
+            }
+        );
+    }
+
+    #[test]
+    fn editor_selection_prefers_editor() {
+        // Given
+        let editor = Some("nvim".to_owned());
+        let visual = Some("code --wait".to_owned());
+
+        // When
+        let configured = select_editor(editor, visual).expect("EDITOR should be selected");
+
+        // Then
+        assert_eq!(
+            configured,
+            ConfiguredEditor {
+                variable: "EDITOR",
+                command: "nvim".to_owned(),
+            }
+        );
+    }
+
+    #[test]
+    fn editor_selection_requires_a_configured_command() {
+        // Given
+        let editor = None;
+        let visual = None;
+
+        // When
+        let error = select_editor(editor, visual).expect_err("missing editor should fail");
+
+        // Then
+        assert_eq!(
+            error.to_string(),
+            "named save without SQL requires $EDITOR or $VISUAL to be set"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn editor_receives_configured_arguments_and_path() {
+        // Given
+        let editor = ConfiguredEditor {
+            variable: "EDITOR",
+            command: r#"sh -c 'test "$1" = "/tmp/dbcrab editor path.sql"' dbcrab-test"#.to_owned(),
+        };
+        let path = Path::new("/tmp/dbcrab editor path.sql");
+
+        // When
+        let result = run_editor(&editor, path);
+
+        // Then
+        result.expect("editor should receive the path as its final argument");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn editor_nonzero_exit_is_an_error() {
+        // Given
+        let editor = ConfiguredEditor {
+            variable: "EDITOR",
+            command: "sh -c 'exit 7' dbcrab-test".to_owned(),
+        };
+
+        // When
+        let error = run_editor(&editor, Path::new("query.sql"))
+            .expect_err("non-zero editor exit should fail");
+
+        // Then
+        assert!(error.to_string().contains("exit status: 7"));
+    }
+
+    #[test]
+    fn parser_accepts_short_named_run_alias() {
+        // Given
+        let input = "run users/by-id id=42 note=\"hello world\" empty=null";
+
+        // When
+        let parsed = parse_command(input).expect("named run should parse");
+
+        // Then
+        match parsed {
+            ParsedCommand::NamedRun { name, values } => {
+                assert_eq!(name, "users/by-id");
+                assert_eq!(values[0].value, Some("42".to_owned()));
+                assert_eq!(values[1].value, Some("hello world".to_owned()));
+                assert_eq!(values[2].value, None);
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parser_accepts_named_list_all() {
+        // Given
+        let input = "named list --all";
+
+        // When
+        let parsed = parse_command(input).expect("named list should parse");
+
+        // Then
+        assert!(matches!(
+            parsed,
+            ParsedCommand::NamedList {
+                shared: false,
+                all: true
+            }
+        ));
+    }
+
+    #[test]
+    fn parser_accepts_named_status() {
+        // Given
+        let input = "named status";
+
+        // When
+        let parsed = parse_command(input).expect("named status should parse");
+
+        // Then
+        assert!(matches!(parsed, ParsedCommand::NamedStatus));
+    }
+
+    #[test]
+    fn parser_accepts_session() {
+        // Given
+        let input = "session";
+
+        // When
+        let parsed = parse_command(input).expect("session should parse");
+
+        // Then
+        assert!(matches!(parsed, ParsedCommand::Session));
+    }
+
+    #[test]
+    fn named_command_requires_runtime_configuration() {
+        // Given
+        let input = "named list";
+
+        // When
+        let uses_runtime_config = command_uses_runtime_config(input);
+
+        // Then
+        assert!(uses_runtime_config);
+    }
+
+    #[test]
+    fn session_command_requires_runtime_configuration() {
+        // Given
+        let input = "session";
+
+        // When
+        let uses_runtime_config = command_uses_runtime_config(input);
+
+        // Then
+        assert!(uses_runtime_config);
+    }
+
+    #[test]
+    fn connection_command_does_not_require_runtime_configuration() {
+        // Given
+        let input = "connection";
+
+        // When
+        let uses_runtime_config = command_uses_runtime_config(input);
+
+        // Then
+        assert!(!uses_runtime_config);
+    }
+
+    #[test]
+    fn ordinary_command_does_not_require_runtime_configuration() {
+        // Given
+        let input = "tables";
+
+        // When
+        let uses_runtime_config = command_uses_runtime_config(input);
+
+        // Then
+        assert!(!uses_runtime_config);
+    }
+
+    #[test]
     fn parser_rejects_non_csv_format() {
         // Given
         let input = "export table --name users --output users.tsv --format tsv";
@@ -2207,6 +3141,34 @@ mod tests {
         // Then
         assert_eq!(suggestions.len(), 1);
         assert_eq!(suggestions[0].value, "--sql");
+    }
+
+    #[test]
+    fn completer_suggests_named_subcommands() {
+        // Given
+        let catalog = shared_catalog(Catalog::default());
+        let line = "named i";
+
+        // When
+        let suggestions = command_suggestions(line, line.len(), &catalog);
+
+        // Then
+        assert_eq!(suggestions.len(), 1);
+        assert_eq!(suggestions[0].value, "info");
+    }
+
+    #[test]
+    fn completer_suggests_named_list_flags() {
+        // Given
+        let catalog = shared_catalog(Catalog::default());
+        let line = "named list --s";
+
+        // When
+        let suggestions = command_suggestions(line, line.len(), &catalog);
+
+        // Then
+        assert_eq!(suggestions.len(), 1);
+        assert_eq!(suggestions[0].value, "--shared");
     }
 
     #[test]

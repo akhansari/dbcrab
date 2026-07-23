@@ -5,8 +5,13 @@ use sqlx::{AssertSqlSafe, PgPool};
 
 use crate::{
     catalog::{Catalog, SharedCatalog},
+    config::ConfigSource,
     errors::{AppError, AppResult, sql_error_details},
     meta::{self, CommandOutcome, MetaOutput, MetaSection},
+    named_sql::{
+        NamedExecutionCompletion, NamedExecutionError, NamedSqlContext, NamedStatementOutput,
+        NamedStatementResult, execute_prepared,
+    },
     render::{CellValue, ResultGrid},
     sql::{is_read_only_statement, likely_returns_rows, split_complete_statements},
 };
@@ -74,6 +79,14 @@ pub struct AgentMetaOutput {
     output: MetaOutput,
 }
 
+#[derive(Debug)]
+pub struct AgentCommandError {
+    pub error: AppError,
+    pub statement: Option<String>,
+    pub rolled_back: bool,
+    pub named_run: bool,
+}
+
 pub async fn execute_sql(
     pool: &PgPool,
     statement: &str,
@@ -127,18 +140,103 @@ pub async fn execute_sql(
 pub async fn execute_command(
     pool: &PgPool,
     catalog: &SharedCatalog,
+    named_sql: Option<&NamedSqlContext>,
+    config_source: Option<&ConfigSource>,
     command: &str,
     options: &AgentOptions,
-) -> AppResult<AgentOutput> {
+    mut on_output: impl FnMut(&AgentOutput),
+) -> Result<AgentOutput, AgentCommandError> {
     let started = Instant::now();
-    let outcome = meta::execute_unattended(command, pool, catalog, !options.read_only).await?;
+    let outcome = meta::execute_unattended(
+        command,
+        pool,
+        catalog,
+        named_sql,
+        config_source,
+        !options.read_only,
+    )
+    .await
+    .map_err(AgentCommandError::from)?;
     let elapsed_ms = started.elapsed().as_millis();
 
     Ok(match outcome {
         CommandOutcome::Output(output) => AgentOutput::Meta(AgentMetaOutput { elapsed_ms, output }),
         CommandOutcome::None => status_output(elapsed_ms, "OK"),
         CommandOutcome::Exit => status_output(elapsed_ms, "EXIT"),
+        CommandOutcome::Run(prepared) => {
+            let completion = execute_prepared(
+                pool,
+                &prepared,
+                options.read_only,
+                Some(&options.statement_timeout),
+                |output| {
+                    let output = named_statement_output(output);
+                    on_output(&output);
+                },
+            )
+            .await
+            .map_err(AgentCommandError::from)?;
+            let status = match completion {
+                NamedExecutionCompletion::Committed => "committed",
+                NamedExecutionCompletion::ReadOnly => "completed",
+            };
+            status_output(started.elapsed().as_millis(), status)
+        }
+        CommandOutcome::RunFailed(error) => {
+            return Err(AgentCommandError {
+                error,
+                statement: None,
+                rolled_back: false,
+                named_run: true,
+            });
+        }
     })
+}
+
+impl From<AppError> for AgentCommandError {
+    fn from(error: AppError) -> Self {
+        Self {
+            error,
+            statement: None,
+            rolled_back: false,
+            named_run: false,
+        }
+    }
+}
+
+impl From<NamedExecutionError> for AgentCommandError {
+    fn from(error: NamedExecutionError) -> Self {
+        Self {
+            error: error.error,
+            statement: error.statement,
+            rolled_back: error.rolled_back,
+            named_run: true,
+        }
+    }
+}
+
+fn named_statement_output(output: NamedStatementOutput) -> AgentOutput {
+    AgentOutput::Statement(AgentStatementOutput {
+        elapsed_ms: output.elapsed_ms,
+        result: match output.result {
+            NamedStatementResult::Rows(grid) => AgentStatementResult::Rows(grid),
+            NamedStatementResult::RowsAffected(rows_affected) => {
+                AgentStatementResult::RowsAffected { rows_affected }
+            }
+        },
+    })
+}
+
+pub fn render_failure_status(rolled_back: bool, format: AgentFormat) -> String {
+    let status = if rolled_back { "rolled_back" } else { "failed" };
+    match format {
+        AgentFormat::Compact => format!("error status={status}\n"),
+        AgentFormat::ColumnJson => format_json_line(json!({
+            "ok": false,
+            "kind": "status",
+            "status": status,
+        })),
+    }
 }
 
 pub fn render_output(output: &AgentOutput, options: &AgentOptions) -> String {
@@ -165,6 +263,7 @@ pub fn agent_guide() -> &'static str {
 - Prefer DBCrab for PostgreSQL inspection/querying.
 - SQL: dbcrab <conn> -e=`<one SQL statement>`.
 - Meta: dbcrab <conn> -:=`<command>`.
+- Named SQL: dbcrab <conn> -:=`run <name> [name=value ...]`.
 - Inspect unknown DBs before querying. To know available meta commands, run: dbcrab <conn> -: help.
 - Defaults: read-only, --format compact, --max-rows 100, --statement-timeout 10s.
 - In compact output, rows are tab-separated; null is \N; check truncated=true.
@@ -172,6 +271,7 @@ pub fn agent_guide() -> &'static str {
 - Repair errors from sqlstate, message, detail, hint, friendly_hint, and position.
 - Never use --allow-write unless the user explicitly asks for mutation.
 - Non-interactive CSV import requires --allow-write.
+- Mutating named SQL, named save, and named delete require --allow-write.
 "#
 }
 

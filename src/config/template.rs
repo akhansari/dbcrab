@@ -113,7 +113,7 @@ fn push_editor_default_group(
 pub fn default_config() -> String {
     let config = AppConfig::default();
     let mut output = format!(
-        "/- kdl-version 2\n\n// emacs | vi\nedit-mode {}\n\nkeybindings {{\n    editor {{\n        emacs-vi-insert {{\n",
+        "/- kdl-version 2\n\n// emacs | vi\nedit-mode {}\n\nnamed-sql {{\n    // shared-path \"~/named-sql\"\n}}\n\nkeybindings {{\n    editor {{\n        emacs-vi-insert {{\n",
         config.edit_mode.name()
     );
     let editor_defaults = editor_default_binding_groups();

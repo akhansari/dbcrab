@@ -1,4 +1,4 @@
-use std::fmt;
+use std::{fmt, path::PathBuf};
 
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 use reedline::{
@@ -41,6 +41,12 @@ fn with_history_menu(mut keybindings: ReedlineKeybindings) -> ReedlineKeybinding
 pub struct AppConfig {
     pub edit_mode: ConfigEditMode,
     pub keybindings: KeybindingsConfig,
+    pub named_sql: NamedSqlConfig,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Default)]
+pub struct NamedSqlConfig {
+    pub shared_path: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Default)]

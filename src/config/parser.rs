@@ -1,4 +1,4 @@
-use std::{fmt, fs, path::PathBuf};
+use std::{env, fmt, fs, path::Path, path::PathBuf};
 
 use crossterm::event::KeyModifiers;
 use kdl::{KdlDocument, KdlNode};
@@ -11,14 +11,38 @@ use crate::{
 use super::keybindings::{
     AppConfig, CommandAction, CommandKeybindings, ConfigEditMode, EditorKeybindings, KeyBinding,
     KeyBindingOperation, KeyRemapOperation, KeyRemapScope, KeyRemaps, KeybindingsConfig,
-    LineEditorAction, LineEditorKeybindings, PromptAction, PromptKeybindings, TuiAction,
-    TuiKeybindings, ViModeSelection, apply_bindings_update, parse_key_binding,
+    LineEditorAction, LineEditorKeybindings, NamedSqlConfig, PromptAction, PromptKeybindings,
+    TuiAction, TuiKeybindings, ViModeSelection, apply_bindings_update, parse_key_binding,
 };
 
-pub fn load(path: Option<PathBuf>) -> AppResult<AppConfig> {
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct LoadedConfig {
+    pub settings: AppConfig,
+    pub source: ConfigSource,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub enum ConfigSource {
+    File(PathBuf),
+    BuiltInDefaults,
+}
+
+impl ConfigSource {
+    pub fn label(&self) -> String {
+        match self {
+            Self::File(path) => path.display().to_string(),
+            Self::BuiltInDefaults => "built-in defaults".to_owned(),
+        }
+    }
+}
+
+pub fn load(path: Option<PathBuf>) -> AppResult<LoadedConfig> {
     let explicit_path = path.is_some();
     let Some(path) = path.or_else(paths::default_config_path) else {
-        return Ok(AppConfig::default());
+        return Ok(LoadedConfig {
+            settings: AppConfig::default(),
+            source: ConfigSource::BuiltInDefaults,
+        });
     };
 
     if !path.exists() {
@@ -28,7 +52,10 @@ pub fn load(path: Option<PathBuf>) -> AppResult<AppConfig> {
                 path.display()
             )))
         } else {
-            Ok(AppConfig::default())
+            Ok(LoadedConfig {
+                settings: AppConfig::default(),
+                source: ConfigSource::BuiltInDefaults,
+            })
         };
     }
 
@@ -36,8 +63,15 @@ pub fn load(path: Option<PathBuf>) -> AppResult<AppConfig> {
         AppError::message(format!("failed to read config `{}`: {err}", path.display()))
     })?;
 
-    parse_config(&text)
-        .map_err(|err| AppError::message(format!("Invalid config `{}`:\n{err}", path.display())))
+    let mut config = parse_config(&text)
+        .map_err(|err| AppError::message(format!("Invalid config `{}`:\n{err}", path.display())))?;
+    if let Some(shared_path) = config.named_sql.shared_path.take() {
+        config.named_sql.shared_path = Some(resolve_config_path(&path, &shared_path)?);
+    }
+    Ok(LoadedConfig {
+        settings: config,
+        source: ConfigSource::File(path),
+    })
 }
 
 pub(super) fn parse_config(text: &str) -> Result<AppConfig, String> {
@@ -47,6 +81,7 @@ pub(super) fn parse_config(text: &str) -> Result<AppConfig, String> {
     let mut config = AppConfig::default();
     let mut edit_mode_seen = false;
     let mut keybindings_seen = false;
+    let mut named_sql_seen = false;
 
     for node in document.nodes() {
         match node.name().value() {
@@ -57,6 +92,10 @@ pub(super) fn parse_config(text: &str) -> Result<AppConfig, String> {
             "keybindings" => {
                 reject_duplicate(text, node, "keybindings", &mut keybindings_seen)?;
                 parse_keybindings(text, node, &mut config.keybindings)?;
+            }
+            "named-sql" => {
+                reject_duplicate(text, node, "named-sql", &mut named_sql_seen)?;
+                parse_named_sql(text, node, &mut config.named_sql)?;
             }
             name => {
                 return Err(node_error(
@@ -70,6 +109,59 @@ pub(super) fn parse_config(text: &str) -> Result<AppConfig, String> {
 
     config.keybindings.tui.validate()?;
     Ok(config)
+}
+
+fn parse_named_sql(
+    text: &str,
+    node: &KdlNode,
+    named_sql: &mut NamedSqlConfig,
+) -> Result<(), String> {
+    let children = group_children(text, node, "named-sql")?;
+    let mut shared_path_seen = false;
+
+    for child in children {
+        match child.name().value() {
+            "shared-path" => {
+                reject_duplicate(text, child, "named-sql.shared-path", &mut shared_path_seen)?;
+                validate_leaf_node(text, child, "named-sql.shared-path")?;
+                let values = string_arguments(text, child, "named-sql.shared-path")?;
+                if values.len() != 1 || values[0].is_empty() {
+                    return Err(node_error(
+                        text,
+                        child,
+                        "`named-sql.shared-path` requires one non-empty path",
+                    ));
+                }
+                named_sql.shared_path = Some(PathBuf::from(values[0]));
+            }
+            name => {
+                return Err(node_error(
+                    text,
+                    child,
+                    format!("unknown `named-sql` node `{name}`"),
+                ));
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn resolve_config_path(config_path: &Path, value: &Path) -> AppResult<PathBuf> {
+    let value = paths::expand_home(value);
+    if value.is_absolute() {
+        return Ok(value);
+    }
+
+    let config_path = if config_path.is_absolute() {
+        config_path.to_owned()
+    } else {
+        env::current_dir()?.join(config_path)
+    };
+    Ok(config_path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join(value))
 }
 
 fn parse_edit_mode_node(text: &str, node: &KdlNode) -> Result<ConfigEditMode, String> {
