@@ -268,10 +268,7 @@ pub fn agent_guide() -> &'static str {
 - Defaults: read-only, --format compact, --max-rows 100, --statement-timeout 10s.
 - In compact output, rows are tab-separated; null is \N; check truncated=true.
 - If truncated=true, narrow the SQL or rerun with --max-rows N.
-- Repair errors from sqlstate, message, detail, hint, friendly_hint, and position.
 - Never use --allow-write unless the user explicitly asks for mutation.
-- Non-interactive CSV import requires --allow-write.
-- Mutating named SQL, named save, and named delete require --allow-write.
 "#
 }
 

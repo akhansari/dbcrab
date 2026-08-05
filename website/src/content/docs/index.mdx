@@ -1,0 +1,96 @@
+---
+title: DBCrab
+description: A modern REPL-first PostgreSQL client with context-aware completion, rich result views, and reusable SQL.
+template: splash
+hero:
+  tagline: A modern REPL-first PostgreSQL client for focused work at the terminal.
+  image:
+    file: ../../../../docs/assets/logo-nobg.svg
+    alt: DBCrab logo
+  actions:
+    - text: Install DBCrab
+      link: /dbcrab/installation/
+      icon: download
+    - text: Run your first query
+      link: /dbcrab/quickstart/
+      icon: right-arrow
+    - text: View on GitLab
+      link: https://gitlab.com/akhansari/dbcrab
+      icon: external
+      variant: minimal
+---
+
+import { Card, CardGrid } from '@astrojs/starlight/components';
+
+## Work with PostgreSQL, not around it
+
+<CardGrid>
+  <Card title="Smart SQL editor">
+    Write multiline SQL with highlighting, persistent history, and schema-aware,
+    context-aware completion.
+  </Card>
+  <Card title="Two result views">
+    Keep small results inline, or explore wide and long results in a full-screen
+    table with cell edit and preview.
+  </Card>
+  <Card title="Database-aware commands">
+    Inspect schemas, relations, functions, types, privileges, and source without
+    leaving the REPL.
+  </Card>
+  <Card title="Reusable workflows">
+    Save parameterized named SQL, isolate work by context, transfer CSV data, and
+    run bounded noninteractive commands.
+  </Card>
+</CardGrid>
+
+## Start in two commands
+
+```sh
+cargo install --locked dbcrab
+dbcrab postgres://user@localhost/database
+```
+
+Type SQL at the `>` prompt and finish each statement with a semicolon.\
+Press `:` on an empty prompt when you need DBCrab commands instead.
+
+## Stay in the REPL
+
+![A multiline SQL query and inline result table in DBCrab](../../../../docs/assets/repl.png)
+
+DBCrab completes database objects and columns from live catalog metadata, renders
+compact results directly in the terminal, and adds useful context to PostgreSQL
+errors.
+
+## Explore larger results
+
+![The DBCrab full-screen table viewer with a JSON cell preview](../../../../docs/assets/tui.png)
+
+Auto display mode opens the full-screen viewer when a result is too wide or long
+for the terminal. You can navigate, preview and copy cells, and update eligible
+table-backed results.
+
+## Choose a path
+
+<CardGrid>
+  <Card title="New to DBCrab">
+    Follow the [Quickstart](quickstart/) to connect, run a read-only query,
+    inspect the session, and open the table viewer.
+  </Card>
+  <Card title="Learn the workflows">
+    Start with the [SQL REPL](guides/sql-repl/), then explore [command
+    mode](guides/command-mode/), [named SQL](guides/named-sql/), the [agentic
+    process](guides/agentic-process/), [CSV transfer](guides/csv-transfer/),
+    [contexts](guides/contexts-history/), and
+    [customization](guides/configuration/).
+  </Card>
+  <Card title="Look up exact behavior">
+    Use the [CLI reference](reference/cli/) and grouped command,
+    [configuration](reference/configuration/),
+    [keybinding](reference/keybindings/), [path](reference/paths-environment/),
+    and [output](reference/display-output/) references.
+  </Card>
+  <Card title="Solve a problem">
+    Check [Troubleshooting](troubleshooting/) for connection, completion, display,
+    history, configuration, and agent-execution issues.
+  </Card>
+</CardGrid>

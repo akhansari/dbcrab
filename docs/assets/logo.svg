@@ -1,0 +1,49 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title description">
+  <title id="title">DBCrab logo</title>
+  <desc id="description">A stylized crab whose body is a three-tier database.</desc>
+
+  <rect width="512" height="512" fill="#86a5b8"/>
+
+  <g fill="none" stroke="#073b4c" stroke-linecap="round" stroke-linejoin="round" stroke-width="18">
+    <!-- Arms and legs sit behind the database body. -->
+    <path d="M158 255C118 248 86 220 83 181"/>
+    <path d="M354 255C394 248 426 220 429 181"/>
+
+    <path d="M153 291L111 278 72 304 42 337 31 371"/>
+    <path d="M359 291L401 278 440 304 470 337 481 371"/>
+    <path d="M151 337L105 327 77 359C63 376 59 398 64 418"/>
+    <path d="M361 337L407 327 435 359C449 376 453 398 448 418"/>
+    <path d="M153 382L116 374 103 407C97 424 101 444 116 459"/>
+    <path d="M359 382L396 374 409 407C415 424 411 444 396 459"/>
+  </g>
+
+  <!-- The pincers use a deep notch to form an open claw without a cutout. -->
+  <path d="M119 183C83 181 56 158 51 126C44 87 71 51 111 41C133 35 156 38 177 50C186 55 184 68 174 71C149 77 130 91 119 111C137 108 153 100 166 87C173 80 185 85 184 96C181 135 155 166 119 183Z" fill="#e44c25" stroke="#073b4c" stroke-linecap="round" stroke-linejoin="round" stroke-width="18"/>
+  <path d="M393 183C429 181 456 158 461 126C468 87 441 51 401 41C379 35 356 38 335 50C326 55 328 68 338 71C363 77 382 91 393 111C375 108 359 100 346 87C339 80 327 85 328 96C331 135 357 166 393 183Z" fill="#e44c25" stroke="#073b4c" stroke-linecap="round" stroke-linejoin="round" stroke-width="18"/>
+
+  <!-- Eye stalks rise just above the database shell. -->
+  <g fill="#073b4c" stroke="#073b4c" stroke-linecap="round" stroke-width="12">
+    <path d="M222 181L216 156"/>
+    <path d="M290 181L296 156"/>
+    <circle cx="214" cy="149" r="9" stroke="none"/>
+    <circle cx="298" cy="149" r="9" stroke="none"/>
+  </g>
+
+  <!-- A single database shell follows the supplied icon's geometry, extended by a third tier. -->
+  <path d="M356 188.5V409C356 426.4 311.2 440.5 256 440.5S156 426.4 156 409V188.5Z" fill="#ffd9c8"/>
+  <path d="M156 188.5H356V262C356 279.4 311.2 293.5 256 293.5S156 279.4 156 262Z" fill="#ef7044"/>
+  <path d="M156 262C156 279.4 200.8 293.5 256 293.5S356 279.4 356 262V335.5C356 352.9 311.2 367 256 367S156 352.9 156 335.5Z" fill="#f7a37d"/>
+
+  <g fill="none" stroke="#073b4c" stroke-linejoin="round" stroke-width="18">
+    <path d="M356 188.5V409C356 426.4 311.2 440.5 256 440.5S156 426.4 156 409V188.5"/>
+    <path d="M356 262C356 279.4 311.2 293.5 256 293.5S156 279.4 156 262"/>
+    <path d="M356 335.5C356 352.9 311.2 367 256 367S156 352.9 156 335.5"/>
+    <ellipse cx="256" cy="188.5" rx="100" ry="31.5" fill="#e44c25"/>
+  </g>
+
+  <g fill="none" stroke="#073b4c" stroke-linecap="round" stroke-width="14">
+    <path d="M193.5 249.8C201 251.7 209.4 253.3 218.5 254.4"/>
+    <path d="M193.5 323.3C201 325.2 209.4 326.8 218.5 327.9"/>
+    <path d="M193.5 396.8C201 398.7 209.4 400.3 218.5 401.4"/>
+  </g>
+</svg>
