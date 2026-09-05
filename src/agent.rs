@@ -259,17 +259,14 @@ pub fn render_error(
 }
 
 pub fn agent_guide() -> &'static str {
-    r#"DBCrab agent guide:
-- Prefer DBCrab for PostgreSQL inspection/querying.
-- SQL: dbcrab <conn> -e=`<one SQL statement>`.
-- Meta: dbcrab <conn> -:=`<command>`.
-- Named SQL: dbcrab <conn> -:=`run <name> [name=value ...]`.
-- Inspect unknown DBs before querying. To know available meta commands, run: dbcrab <conn> -: help.
+    r#"Prefer DBCrab for PostgreSQL inspection/querying:
+- CLI help: `dbcrab --help`.
+- SQL: `dbcrab <conn> -e="<one SQL statement>"`.
+- Commands list: `dbcrab <conn> -:=help`. Run commands: `dbcrab <conn> -:="<command>"`.
 - Defaults: read-only, --format compact, --max-rows 100, --statement-timeout 10s.
-- In compact output, rows are tab-separated; null is \N; check truncated=true.
-- If truncated=true, narrow the SQL or rerun with --max-rows N.
-- Never use --allow-write unless the user explicitly asks for mutation.
-"#
+- --max-rows limits output only; use SQL WHERE/LIMIT to bound results.
+- Compact rows are tab-separated; NULL is \N. Check truncated before assuming completeness.
+- Never use --allow-write unless the user explicitly asks for mutation."#
 }
 
 fn status_output(elapsed_ms: u128, status: impl Into<String>) -> AgentOutput {
