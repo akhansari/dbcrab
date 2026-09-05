@@ -218,6 +218,7 @@ fn common_editor_settings(editor: Reedline) -> Reedline {
         })
         .with_visual_selection_style(Style::new().on(Color::DarkGray))
         .use_bracketed_paste(true)
+        .use_kitty_keyboard_enhancement(true)
 }
 
 async fn run_command_mode(
