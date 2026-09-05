@@ -105,7 +105,7 @@ See [Import and export CSV](../guides/csv-transfer/) for complete workflows.
 
 ## Agent output is incomplete
 
-Noninteractive output defaults to 100 rendered rows. Check `truncated=true` and
+Noninteractive output defaults to 1000 rendered rows. Check `truncated=true` and
 raise `--max-rows` or narrow the SQL. The option limits rendering, not database
 work, so use SQL `LIMIT` when the query itself must be bounded. The default
 statement timeout is `10s`.

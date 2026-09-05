@@ -16,7 +16,7 @@ use crate::{
     sql::{is_read_only_statement, likely_returns_rows, split_complete_statements},
 };
 
-pub const DEFAULT_MAX_ROWS: usize = 100;
+pub const DEFAULT_MAX_ROWS: usize = 1000;
 pub const DEFAULT_STATEMENT_TIMEOUT: &str = "10s";
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -263,7 +263,7 @@ pub fn agent_guide() -> &'static str {
 - CLI help: `dbcrab --help`.
 - SQL: `dbcrab <conn> -e="<one SQL statement>"`.
 - Commands list: `dbcrab <conn> -:=help`. Run commands: `dbcrab <conn> -:="<command>"`.
-- Defaults: read-only, --format compact, --max-rows 100, --statement-timeout 10s.
+- Defaults: read-only, --format compact, --max-rows 1000, --statement-timeout 10s.
 - --max-rows limits output only; use SQL WHERE/LIMIT to bound results.
 - Compact rows are tab-separated; NULL is \N. Check truncated before assuming completeness.
 - Never use --allow-write unless the user explicitly asks for mutation."#

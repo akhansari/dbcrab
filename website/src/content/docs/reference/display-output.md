@@ -144,7 +144,7 @@ standard output and exit `0` on success or `1` on execution failure. Earlier
 CLI, configuration, runtime-startup, and connection errors use the ordinary
 standard-error path.
 
-`--max-rows` defaults to 100 and limits each emitted grid independently. DBCrab
+`--max-rows` defaults to 1000 and limits each emitted grid independently. DBCrab
 fetches the complete database result first, so `row_count`/`rows` is the full
 count and `truncated` reports output truncation, not query execution truncation.
 

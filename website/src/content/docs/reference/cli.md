@@ -41,7 +41,7 @@ and version do not require it.
 | `-e <SQL>`, `--execute <SQL>` | SQL text | none | Run exactly one SQL statement non-interactively. Conflicts with `--command`. A trailing semicolon is optional. |
 | `-: <COMMAND>`, `--command <COMMAND>` | DBCrab command text | none | Run exactly one meta-command non-interactively. Conflicts with `--execute`. Do not prefix the value with `:`. |
 | `--format <FORMAT>` | `compact` or `column-json` | `compact` | Select non-interactive output encoding. Ignored in the interactive REPL. |
-| `--max-rows <ROWS>` | unsigned integer | `100` | Limit rows emitted for each non-interactive result grid. DBCrab still fetches and counts the full result. `0` resolves back to the default of `100`. |
+| `--max-rows <ROWS>` | unsigned integer | `1000` | Limit rows emitted for each non-interactive result grid. DBCrab still fetches and counts the full result. `0` resolves back to the default of `1000`. |
 | `--statement-timeout <TIMEOUT>` | PostgreSQL timeout value | `10s` | Set transaction-local PostgreSQL `statement_timeout` for `--execute` and non-interactive named-SQL runs. PostgreSQL validates the value. |
 | `--allow-write` | none | off | Permit database mutations, non-interactive imports, and non-interactive named-SQL save/delete operations. |
 | `-h`, `--help` | none | off | Print CLI help and exit. |

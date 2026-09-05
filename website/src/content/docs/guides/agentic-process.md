@@ -71,7 +71,7 @@ Agent execution is read-only by default. DBCrab accepts `SELECT`, `WITH`, `SHOW`
 `VALUES`, `TABLE`, and `EXPLAIN`, marks the PostgreSQL transaction read-only, and
 rolls it back after successful execution.
 
-The defaults also apply a `10s` statement timeout, render at most 100 rows, and
+The defaults also apply a `10s` statement timeout, render at most 1000 rows, and
 use compact output. Override those bounds when the task requires it:
 
 ```sh

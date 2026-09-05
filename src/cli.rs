@@ -106,7 +106,7 @@ where
                 .help("Maximum rows returned by non-interactive agent output")
                 .value_name("ROWS")
                 .value_parser(value_parser!(usize))
-                .default_value("100"),
+                .default_value("1000"),
         )
         .arg(
             Arg::new("statement-timeout")
