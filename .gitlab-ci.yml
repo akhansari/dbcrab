@@ -69,6 +69,7 @@ build-release:
 publish:
   stage: release
   image: rust:1
+  dependencies: []
   when: manual
   allow_failure: false
   script:

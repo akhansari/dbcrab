@@ -10,6 +10,7 @@ readme = "README.md"
 categories = ["database", "command-line-utilities"]
 keywords = ["database-management", "postgres", "repl", "tui"]
 authors = ["Amin Khansari"]
+exclude = ["/dist/**"]
 
 [dependencies]
 ansi-to-tui = { version = "8.0.1", default-features = false }
