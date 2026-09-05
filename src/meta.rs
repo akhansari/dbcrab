@@ -8,7 +8,10 @@ use std::{
 
 use clap::{Arg, ArgAction, ArgGroup, Command};
 use nu_ansi_term::{Color, Style};
-use reedline::{Completer, Highlighter, Span, StyledText, Suggestion, ValidationResult, Validator};
+use reedline::{
+    Completer, CompletionResult, Highlighter, Span, StyledText, Suggestion, ValidationResult,
+    Validator,
+};
 use sqlx::{PgPool, Row};
 
 use crate::{
@@ -228,8 +231,13 @@ impl CommandCompleter {
 }
 
 impl Completer for CommandCompleter {
-    fn complete(&mut self, line: &str, pos: usize) -> Vec<Suggestion> {
-        command_suggestions_with_named(line, pos, &self.catalog, Some(&self.named_sql))
+    fn complete(&mut self, line: &str, pos: usize) -> CompletionResult {
+        CompletionResult::fresh(command_suggestions_with_named(
+            line,
+            pos,
+            &self.catalog,
+            Some(&self.named_sql),
+        ))
     }
 }
 
@@ -3116,17 +3124,28 @@ mod tests {
     }
 
     #[test]
-    fn completer_suggests_export_subcommands() {
+    fn completer_suggests_export_subcommands() -> AppResult<()> {
         // Given
         let catalog = shared_catalog(Catalog::default());
+        let base = env::temp_dir().join(format!("dbcrab-meta-completion-{}", process::id()));
+        let context = NamedSqlContext::load_from_with_base(
+            &base,
+            None,
+            &crate::config::NamedSqlConfig::default(),
+            base.join("data"),
+        )?;
+        let mut completer = CommandCompleter::new(catalog, context);
         let line = "export q";
 
         // When
-        let suggestions = command_suggestions(line, line.len(), &catalog);
+        let (result, ranges) = completer.complete_with_base_ranges(line, line.len());
 
         // Then
-        assert_eq!(suggestions.len(), 1);
-        assert_eq!(suggestions[0].value, "query");
+        assert!(!result.is_provisional());
+        assert_eq!(result.suggestions().len(), 1);
+        assert_eq!(result.suggestions()[0].value, "query");
+        assert_eq!(ranges, vec![7..8]);
+        Ok(())
     }
 
     #[test]

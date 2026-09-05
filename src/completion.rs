@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use nu_ansi_term::{Color, Style};
-use reedline::{Completer, Span, Suggestion};
+use reedline::{Completer, CompletionResult, Span, Suggestion};
 use sqlparser::{
     dialect::PostgreSqlDialect,
     keywords::Keyword,
@@ -45,8 +45,8 @@ impl SqlCompleter {
 }
 
 impl Completer for SqlCompleter {
-    fn complete(&mut self, line: &str, pos: usize) -> Vec<Suggestion> {
-        self.suggestions(line, pos)
+    fn complete(&mut self, line: &str, pos: usize) -> CompletionResult {
+        CompletionResult::fresh(self.suggestions(line, pos))
     }
 }
 
@@ -1206,15 +1206,17 @@ mod tests {
     #[test]
     fn completer_uses_from_after_cursor_to_infer_column_context() {
         // Given
-        let completer = SqlCompleter::new(shared_catalog(after_cursor_context_catalog()));
+        let mut completer = SqlCompleter::new(shared_catalog(after_cursor_context_catalog()));
         let line = "em from users";
 
         // When
-        let suggestions = completer.suggestion_values(line, 2);
+        let (result, ranges) = completer.complete_with_base_ranges(line, 2);
 
         // Then
-        assert!(suggestions.contains(&"email".to_owned()));
-        assert!(!suggestions.contains(&"emails".to_owned()));
+        assert!(!result.is_provisional());
+        assert_eq!(result.suggestions().len(), 1);
+        assert_eq!(result.suggestions()[0].value, "email");
+        assert_eq!(ranges, vec![0..2]);
     }
 
     #[test]

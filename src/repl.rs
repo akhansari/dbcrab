@@ -214,6 +214,7 @@ fn common_editor_settings(editor: Reedline) -> Reedline {
             vi_insert: Some(SetCursorStyle::SteadyBar),
             vi_normal: Some(SetCursorStyle::SteadyBlock),
             emacs: None,
+            ..CursorConfig::default()
         })
         .with_visual_selection_style(Style::new().on(Color::DarkGray))
         .use_bracketed_paste(true)

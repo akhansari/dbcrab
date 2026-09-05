@@ -84,6 +84,7 @@ impl SqlEditMode {
             PromptEditMode::Default
             | PromptEditMode::Emacs
             | PromptEditMode::Vi(PromptViMode::Insert)
+            | PromptEditMode::Helix(_)
             | PromptEditMode::Custom(_) => None,
         };
         self.key_remaps.remap_editor_event(vi_mode, event)
@@ -245,6 +246,7 @@ impl EditMode for CommandEditMode {
             PromptEditMode::Default
             | PromptEditMode::Emacs
             | PromptEditMode::Vi(PromptViMode::Insert)
+            | PromptEditMode::Helix(_)
             | PromptEditMode::Custom(_) => None,
         };
         let event = self

@@ -2,8 +2,8 @@ use std::{fmt, path::PathBuf};
 
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 use reedline::{
-    EditCommand, Keybindings as ReedlineKeybindings, ReedlineEvent, default_emacs_keybindings,
-    default_vi_insert_keybindings, default_vi_normal_keybindings,
+    EditCommand, Granularity, Keybindings as ReedlineKeybindings, ReedlineEvent,
+    default_emacs_keybindings, default_vi_insert_keybindings, default_vi_normal_keybindings,
 };
 
 pub(crate) const HISTORY_MENU: &str = "history_menu";
@@ -823,7 +823,9 @@ impl LineEditorAction {
             Action::SwapGraphemes => edit(EC::SwapGraphemes),
             Action::SelectAll => edit(EC::SelectAll),
             Action::CopySelection => edit(EC::CopySelection),
-            Action::CutSelection => edit(EC::CutSelection),
+            Action::CutSelection => edit(EC::CutSelection {
+                granularity: Granularity::CharWise,
+            }),
             Action::CopyFromStart => edit(EC::CopyFromStart),
             Action::CopyFromLineStart => edit(EC::CopyFromLineStart),
             Action::CopyFromLineNonBlankStart => edit(EC::CopyFromLineNonBlankStart),
