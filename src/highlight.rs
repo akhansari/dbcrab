@@ -37,10 +37,12 @@ fn highlight_sql(line: &str) -> StyledText {
                 cursor = end;
             }
             '-' if peek_char(&mut chars) == Some('-') => {
-                let end = line.len();
+                let end = line[idx..]
+                    .find('\n')
+                    .map_or(line.len(), |offset| idx + offset);
                 push(&mut styled, Style::new().fg(Color::Green), &line[idx..end]);
+                skip_until(&mut chars, end);
                 cursor = end;
-                break;
             }
             '/' if peek_char(&mut chars) == Some('*') => {
                 chars.next();
@@ -239,4 +241,201 @@ fn skip_until(chars: &mut std::iter::Peekable<std::str::CharIndices<'_>>, end: u
 
 fn peek_char(chars: &mut std::iter::Peekable<std::str::CharIndices<'_>>) -> Option<char> {
     chars.peek().map(|(_, ch)| *ch)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn assert_highlighting(styled: &StyledText, expected: &[(Style, &str)]) {
+        let actual: Vec<_> = styled
+            .buffer
+            .iter()
+            .flat_map(|(style, text)| text.chars().map(move |ch| (*style, ch)))
+            .collect();
+        let expected: Vec<_> = expected
+            .iter()
+            .flat_map(|(style, text)| text.chars().map(move |ch| (*style, ch)))
+            .collect();
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn sql_highlighting_resumes_after_a_line_comment() {
+        // Given
+        let sql = "-- a comment\nselect 1;";
+
+        // When
+        let styled = SqlHighlighter.highlight(sql, sql.len());
+
+        // Then
+        assert_highlighting(
+            &styled,
+            &[
+                (Style::new().fg(Color::Green), "-- a comment"),
+                (Style::new(), "\n"),
+                (Style::new().bold().fg(Color::Purple), "select"),
+                (Style::new(), " "),
+                (Style::new().fg(Color::Blue), "1"),
+                (Style::new(), ";"),
+            ],
+        );
+    }
+
+    #[test]
+    fn sql_highlighting_resumes_after_an_inline_comment() {
+        // Given
+        let sql = "select 1; -- a comment\nselect 2;";
+
+        // When
+        let styled = SqlHighlighter.highlight(sql, sql.len());
+
+        // Then
+        assert_highlighting(
+            &styled,
+            &[
+                (Style::new().bold().fg(Color::Purple), "select"),
+                (Style::new(), " "),
+                (Style::new().fg(Color::Blue), "1"),
+                (Style::new(), "; "),
+                (Style::new().fg(Color::Green), "-- a comment"),
+                (Style::new(), "\n"),
+                (Style::new().bold().fg(Color::Purple), "select"),
+                (Style::new(), " "),
+                (Style::new().fg(Color::Blue), "2"),
+                (Style::new(), ";"),
+            ],
+        );
+    }
+
+    #[test]
+    fn sql_highlighting_resumes_after_consecutive_line_comments() {
+        // Given
+        let sql = "-- first\n-- second\nselect 1;";
+
+        // When
+        let styled = SqlHighlighter.highlight(sql, sql.len());
+
+        // Then
+        assert_highlighting(
+            &styled,
+            &[
+                (Style::new().fg(Color::Green), "-- first"),
+                (Style::new(), "\n"),
+                (Style::new().fg(Color::Green), "-- second"),
+                (Style::new(), "\n"),
+                (Style::new().bold().fg(Color::Purple), "select"),
+                (Style::new(), " "),
+                (Style::new().fg(Color::Blue), "1"),
+                (Style::new(), ";"),
+            ],
+        );
+    }
+
+    #[test]
+    fn a_line_comment_without_a_newline_extends_to_the_end() {
+        // Given
+        let sql = "-- select 'unfinished";
+
+        // When
+        let styled = SqlHighlighter.highlight(sql, sql.len());
+
+        // Then
+        assert_highlighting(
+            &styled,
+            &[(Style::new().fg(Color::Green), "-- select 'unfinished")],
+        );
+    }
+
+    #[test]
+    fn unicode_comments_and_crlf_line_endings_are_preserved() {
+        // Given
+        let sql = "-- café 🦀\r\nselect 1;";
+
+        // When
+        let styled = SqlHighlighter.highlight(sql, sql.len());
+
+        // Then
+        assert_highlighting(
+            &styled,
+            &[
+                (Style::new().fg(Color::Green), "-- café 🦀\r"),
+                (Style::new(), "\n"),
+                (Style::new().bold().fg(Color::Purple), "select"),
+                (Style::new(), " "),
+                (Style::new().fg(Color::Blue), "1"),
+                (Style::new(), ";"),
+            ],
+        );
+    }
+
+    #[test]
+    fn comment_markers_inside_a_string_keep_string_highlighting() {
+        // Given
+        let sql = "select '-- a comment\nstill a string';";
+
+        // When
+        let styled = SqlHighlighter.highlight(sql, sql.len());
+
+        // Then
+        assert_highlighting(
+            &styled,
+            &[
+                (Style::new().bold().fg(Color::Purple), "select"),
+                (Style::new(), " "),
+                (
+                    Style::new().fg(Color::Yellow),
+                    "'-- a comment\nstill a string'",
+                ),
+                (Style::new(), ";"),
+            ],
+        );
+    }
+
+    #[test]
+    fn comment_markers_inside_a_quoted_identifier_keep_identifier_highlighting() {
+        // Given
+        let sql = "select \"-- a comment\nstill an identifier\";";
+
+        // When
+        let styled = SqlHighlighter.highlight(sql, sql.len());
+
+        // Then
+        assert_highlighting(
+            &styled,
+            &[
+                (Style::new().bold().fg(Color::Purple), "select"),
+                (Style::new(), " "),
+                (
+                    Style::new().fg(Color::Cyan),
+                    "\"-- a comment\nstill an identifier\"",
+                ),
+                (Style::new(), ";"),
+            ],
+        );
+    }
+
+    #[test]
+    fn comment_markers_inside_a_dollar_quoted_string_keep_string_highlighting() {
+        // Given
+        let sql = "select $tag$-- a comment\nstill a string$tag$;";
+
+        // When
+        let styled = SqlHighlighter.highlight(sql, sql.len());
+
+        // Then
+        assert_highlighting(
+            &styled,
+            &[
+                (Style::new().bold().fg(Color::Purple), "select"),
+                (Style::new(), " "),
+                (
+                    Style::new().fg(Color::Yellow),
+                    "$tag$-- a comment\nstill a string$tag$",
+                ),
+                (Style::new(), ";"),
+            ],
+        );
+    }
 }
