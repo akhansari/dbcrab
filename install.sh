@@ -107,7 +107,13 @@ detect_platform() {
             binary_name=dbcrab.exe
             ;;
         Darwin)
-            die 'macOS release binaries are not currently available; install DBCrab with Cargo'
+            install_platform=unix
+            case "$architecture" in
+                x86_64 | amd64) target='x86_64-apple-darwin' ;;
+                aarch64 | arm64) target='aarch64-apple-darwin' ;;
+                *) die "unsupported macOS architecture: $architecture" ;;
+            esac
+            binary_name=dbcrab
             ;;
         *)
             die "unsupported operating system: $os"

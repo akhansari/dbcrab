@@ -34,14 +34,11 @@ cargo install --locked dbcrab
 
 ### Prebuilt release
 
+Install a prebuilt release for Linux, Windows, or macOS:
+
 ```sh
 curl -fsSL https://gitlab.com/akhansari/dbcrab/-/raw/main/install.sh | sh
 ```
-
-Prebuilt macOS releases are not available yet.
-If you can help build and test them,
-contributions are welcome: [open an issue](https://gitlab.com/akhansari/dbcrab/-/issues)
-or submit a merge request on GitLab.
 
 ## Start
 
