@@ -161,16 +161,6 @@ pub fn normalize_typed_identifier(identifier: &str) -> String {
     }
 }
 
-pub fn identifier_matches_prefix(identifier: &str, typed_prefix: &str) -> bool {
-    if typed_prefix.starts_with('"') {
-        identifier.starts_with(&unquote_partial_identifier(typed_prefix))
-    } else {
-        identifier
-            .to_ascii_lowercase()
-            .starts_with(&typed_prefix.to_ascii_lowercase())
-    }
-}
-
 fn can_use_unquoted_identifier(identifier: &str) -> bool {
     let mut chars = identifier.chars();
     let Some(first) = chars.next() else {

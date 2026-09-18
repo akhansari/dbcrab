@@ -78,9 +78,6 @@ impl CompletionRequest {
 struct CompletionInput {
     prefix: String,
     normalized_prefix: String,
-    prefix_lower: String,
-    prefix_upper: String,
-    sort_prefix: String,
     qualifier: Option<String>,
     replacement_span: Span,
 }
@@ -104,16 +101,10 @@ impl CompletionInput {
 
     fn from_parts(prefix: String, qualifier: Option<String>, replacement_span: Span) -> Self {
         let normalized_prefix = normalize_typed_identifier(&prefix);
-        let sort_prefix = normalized_prefix.to_ascii_lowercase();
-        let prefix_lower = prefix.to_ascii_lowercase();
-        let prefix_upper = prefix.to_ascii_uppercase();
 
         Self {
             prefix,
             normalized_prefix,
-            prefix_lower,
-            prefix_upper,
-            sort_prefix,
             qualifier,
             replacement_span,
         }
@@ -121,10 +112,6 @@ impl CompletionInput {
 
     fn is_empty(&self) -> bool {
         self.prefix.is_empty()
-    }
-
-    fn is_quoted(&self) -> bool {
-        self.prefix.starts_with('"')
     }
 }
 
@@ -137,6 +124,7 @@ struct Candidate {
     style: Option<Style>,
     kind: CandidateKind,
     sort_priority: u8,
+    matched: Option<crate::fuzzy::Match>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -171,6 +159,7 @@ impl Candidate {
             style,
             kind,
             sort_priority,
+            matched: None,
         }
     }
 
@@ -375,23 +364,7 @@ fn broad_candidates(
 }
 
 fn identifier_matches_input_prefix(identifier: &str, input: &CompletionInput) -> bool {
-    if input.is_quoted() {
-        identifier.starts_with(&input.normalized_prefix)
-    } else {
-        starts_with_ascii_case_insensitive(identifier, &input.prefix_lower)
-    }
-}
-
-fn starts_with_ascii_case_insensitive(value: &str, lowercase_prefix: &str) -> bool {
-    value
-        .as_bytes()
-        .get(..lowercase_prefix.len())
-        .is_some_and(|candidate_prefix| {
-            candidate_prefix
-                .iter()
-                .zip(lowercase_prefix.bytes())
-                .all(|(candidate, prefix)| candidate.to_ascii_lowercase() == prefix)
-        })
+    crate::fuzzy::find(identifier, &input.normalized_prefix).is_some()
 }
 
 fn build_suggestions(
@@ -403,7 +376,8 @@ fn build_suggestions(
     let mut indexes: HashMap<String, usize> = HashMap::with_capacity(candidate_count);
     let mut merged_candidates: Vec<MergedCandidate> = Vec::with_capacity(candidate_count);
 
-    for candidate in candidates {
+    for mut candidate in candidates {
+        candidate.matched = crate::fuzzy::find(&candidate.value, &input.normalized_prefix);
         if let Some(index) = indexes.get(&candidate.value).copied() {
             merged_candidates[index].merge(candidate);
         } else {
@@ -412,8 +386,7 @@ fn build_suggestions(
         }
     }
 
-    merged_candidates
-        .sort_by(|left, right| compare_candidates(&left.candidate, &right.candidate, input));
+    merged_candidates.sort_by(|left, right| compare_candidates(&left.candidate, &right.candidate));
 
     merged_candidates
         .into_iter()
@@ -422,6 +395,7 @@ fn build_suggestions(
             merged.candidate
         })
         .map(|candidate| Suggestion {
+            match_indices: candidate.matched.map(|matched| matched.indices),
             value: candidate.value,
             display_override: None,
             description: candidate.description,
@@ -429,20 +403,18 @@ fn build_suggestions(
             extra: None,
             span,
             append_whitespace: candidate.append_whitespace,
-            match_indices: None,
         })
         .collect()
 }
 
-fn compare_candidates(
-    left: &Candidate,
-    right: &Candidate,
-    input: &CompletionInput,
-) -> std::cmp::Ordering {
+fn compare_candidates(left: &Candidate, right: &Candidate) -> std::cmp::Ordering {
     left.sort_priority
         .cmp(&right.sort_priority)
         .then_with(|| {
-            match_quality(&left.sort_value, input).cmp(&match_quality(&right.sort_value, input))
+            left.matched
+                .as_ref()
+                .map(|matched| &matched.rank)
+                .cmp(&right.matched.as_ref().map(|matched| &matched.rank))
         })
         .then_with(|| left.kind.cmp(&right.kind))
         .then_with(|| left.sort_value.len().cmp(&right.sort_value.len()))
@@ -452,20 +424,6 @@ fn compare_candidates(
 
 fn candidate_precedence(candidate: &Candidate) -> (u8, CandidateKind) {
     (candidate.sort_priority, candidate.kind)
-}
-
-fn match_quality(value: &str, input: &CompletionInput) -> u8 {
-    if input.is_empty() {
-        return 0;
-    }
-
-    if value == input.sort_prefix {
-        0
-    } else if value.starts_with(&input.sort_prefix) {
-        1
-    } else {
-        2
-    }
 }
 
 fn normalized_sort_value(value: &str) -> String {
@@ -491,7 +449,7 @@ fn merged_description(descriptions: &[String]) -> Option<String> {
 fn keyword_candidates(input: &CompletionInput) -> Vec<Candidate> {
     SQL_KEYWORDS
         .iter()
-        .filter(|keyword| keyword.starts_with(&input.prefix_upper))
+        .filter(|keyword| crate::fuzzy::find(keyword, &input.prefix).is_some())
         .map(|keyword| {
             Candidate::new(
                 keyword.to_ascii_lowercase(),
@@ -586,7 +544,7 @@ fn matches_sql_keyword_prefix(input: &CompletionInput) -> bool {
     !input.is_empty()
         && SQL_KEYWORDS
             .iter()
-            .any(|keyword| keyword.starts_with(&input.prefix_upper))
+            .any(|keyword| keyword.starts_with(&input.prefix.to_ascii_uppercase()))
 }
 
 fn significant_words(tokens: &[Token]) -> Vec<String> {
@@ -1134,6 +1092,74 @@ mod tests {
                 },
             ],
         )
+    }
+
+    #[test]
+    fn fuzzy_abbreviations_are_not_replaced_by_a_shared_prefix() {
+        use reedline::{ColumnarMenu, Editor, InputMode, Menu, MenuBuilder, UndoBehavior};
+
+        // Given
+        let catalog = Catalog::from_parts(
+            vec![],
+            vec![
+                TableInfo {
+                    schema: "public".into(),
+                    name: "user_accounts".into(),
+                    kind: "r".into(),
+                },
+                TableInfo {
+                    schema: "public".into(),
+                    name: "user_actions".into(),
+                    kind: "r".into(),
+                },
+            ],
+            vec![],
+        );
+        let mut completer = SqlCompleter::new(shared_catalog(catalog));
+        let mut menu = ColumnarMenu::default().with_input_mode(InputMode::FullBuffer);
+        let mut editor = Editor::default();
+        editor.edit_buffer(
+            |buffer| buffer.insert_str("select * from uac"),
+            UndoBehavior::CreateUndoPoint,
+        );
+
+        // When
+        let completed = menu.can_partially_complete(false, &mut editor, &mut completer);
+
+        // Then
+        assert!(!completed);
+        assert_eq!(editor.get_buffer(), "select * from uac");
+    }
+
+    #[test]
+    fn completer_matches_fuzzy_columns_within_alias_scope() {
+        // Given
+        let mut completer = SqlCompleter::new(shared_catalog(test_catalog()));
+        let line = "select u.EML from users u";
+
+        // When
+        let result = completer.complete(line, 12);
+
+        // Then
+        assert_eq!(result.suggestions().len(), 1);
+        assert_eq!(result.suggestions()[0].value, "email");
+        assert_eq!(result.suggestions()[0].span, Span::new(9, 12));
+        assert_eq!(result.suggestions()[0].match_indices, Some(vec![0, 1, 4]));
+    }
+
+    #[test]
+    fn completer_matches_quoted_names_case_insensitively() {
+        // Given
+        let mut completer = SqlCompleter::new(shared_catalog(schema_qualified_catalog()));
+        let line = "select * from \"odS";
+
+        // When
+        let result = completer.complete(line, line.len());
+
+        // Then
+        assert_eq!(result.suggestions().len(), 1);
+        assert_eq!(result.suggestions()[0].value, "\"Orders\"");
+        assert_eq!(result.suggestions()[0].match_indices, Some(vec![1, 3, 6]));
     }
 
     #[test]

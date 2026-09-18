@@ -5,6 +5,7 @@ mod completion;
 mod config;
 mod connection;
 mod errors;
+mod fuzzy;
 mod highlight;
 mod meta;
 mod named_sql;

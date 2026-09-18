@@ -15,7 +15,7 @@ use reedline::{
 use sqlx::{PgPool, Row};
 
 use crate::{
-    catalog::{Catalog, SharedCatalog, identifier_matches_prefix, quote_identifier},
+    catalog::{Catalog, SharedCatalog, quote_identifier},
     config::ConfigSource,
     errors::{AppError, AppResult},
     named_sql::{
@@ -1964,7 +1964,7 @@ fn command_suggestions_with_named(
     let candidates = if span.start == 0 {
         COMMANDS
             .iter()
-            .filter(|info| info.name.starts_with(prefix))
+            .filter(|info| crate::fuzzy::find(info.name, prefix).is_some())
             .map(|info| command_suggestion(info.name, info.description, span, true))
             .collect::<Vec<_>>()
     } else if matches!(command, "import" | "export") && words_before.len() == 1 {
@@ -1989,7 +1989,26 @@ fn command_suggestions_with_named(
         Vec::new()
     };
 
-    dedupe_suggestions(candidates)
+    let mut matches = dedupe_suggestions(candidates)
+        .into_iter()
+        .filter_map(|mut suggestion| {
+            let matched = crate::fuzzy::find(&suggestion.value, prefix)?;
+            suggestion.match_indices = Some(matched.indices);
+            Some((matched.rank, suggestion))
+        })
+        .collect::<Vec<_>>();
+    if !prefix.is_empty() {
+        matches.sort_by(|(left_rank, left), (right_rank, right)| {
+            left_rank
+                .cmp(right_rank)
+                .then_with(|| left.value.len().cmp(&right.value.len()))
+                .then_with(|| left.value.cmp(&right.value))
+        });
+    }
+    matches
+        .into_iter()
+        .map(|(_, suggestion)| suggestion)
+        .collect()
 }
 
 fn named_subcommand_suggestions(prefix: &str, span: Span) -> Vec<Suggestion> {
@@ -2002,7 +2021,7 @@ fn named_subcommand_suggestions(prefix: &str, span: Span) -> Vec<Suggestion> {
         ("delete", "Delete named SQL"),
     ]
     .into_iter()
-    .filter(|(name, _)| name.starts_with(prefix))
+    .filter(|(name, _)| crate::fuzzy::find(name, prefix).is_some())
     .map(|(name, description)| command_suggestion(name, description, span, true))
     .collect()
 }
@@ -2016,7 +2035,7 @@ fn named_sql_name_suggestions(
         .completion_names()
         .unwrap_or_default()
         .into_iter()
-        .filter(|name| name.starts_with(prefix))
+        .filter(|name| crate::fuzzy::find(name, prefix).is_some())
         .map(|name| command_suggestion(&name, "named SQL", span, true))
         .collect()
 }
@@ -2032,7 +2051,7 @@ fn transfer_subcommand_suggestions(command: &str, prefix: &str, span: Span) -> V
     };
     subcommands
         .iter()
-        .filter(|(name, _)| name.starts_with(prefix))
+        .filter(|(name, _)| crate::fuzzy::find(name, prefix).is_some())
         .map(|(name, description)| command_suggestion(name, description, span, true))
         .collect()
 }
@@ -2087,7 +2106,7 @@ fn flag_suggestions(
     flags
         .iter()
         .copied()
-        .filter(|flag| flag.starts_with(prefix))
+        .filter(|flag| crate::fuzzy::find(flag, prefix).is_some())
         .map(|flag| Suggestion {
             value: flag.to_owned(),
             display_override: None,
@@ -2106,7 +2125,7 @@ fn object_suggestions(prefix: &str, span: Span, catalog: &SharedCatalog) -> Vec<
     let schemas = catalog
         .schemas()
         .iter()
-        .filter(|schema| identifier_matches_prefix(schema, prefix))
+        .filter(|schema| crate::fuzzy::find(schema, prefix).is_some())
         .map(|schema| Suggestion {
             value: format!("{}.", quote_identifier(schema)),
             display_override: None,
@@ -2120,7 +2139,7 @@ fn object_suggestions(prefix: &str, span: Span, catalog: &SharedCatalog) -> Vec<
     let tables = catalog
         .tables()
         .iter()
-        .filter(|table| identifier_matches_prefix(&table.name, prefix))
+        .filter(|table| crate::fuzzy::find(&table.name, prefix).is_some())
         .map(|table| Suggestion {
             value: quote_identifier(&table.name),
             display_override: None,
@@ -3172,8 +3191,24 @@ mod tests {
         let suggestions = command_suggestions(line, line.len(), &catalog);
 
         // Then
-        assert_eq!(suggestions.len(), 1);
+        assert_eq!(suggestions.len(), 2);
         assert_eq!(suggestions[0].value, "info");
+        assert_eq!(suggestions[1].value, "list");
+    }
+
+    #[test]
+    fn completer_matches_case_insensitive_flag_abbreviations() {
+        // Given
+        let catalog = shared_catalog(Catalog::default());
+        let line = "export query --SL";
+
+        // When
+        let suggestions = command_suggestions(line, line.len(), &catalog);
+
+        // Then
+        assert_eq!(suggestions.len(), 1);
+        assert_eq!(suggestions[0].value, "--sql");
+        assert_eq!(suggestions[0].match_indices, Some(vec![0, 1, 2, 4]));
     }
 
     #[test]
